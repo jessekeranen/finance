@@ -1,0 +1,76 @@
+---
+title: "Black-Scholes model"
+author: "Jesse Keränen"
+date: "11/26/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
+```
+
+# Prologue
+
+So called Black-Scholes model (or Black-Scholes-Merton model), is a model that provides clear mathematical model to evaluate price of a financial instrument. One could compare Black-Scholes model in the field of options to capital asset model in the field of stocks. Despite their weaknesses both are widely used in the financial sector. Something about the significance of the model tells that both Scholes and Merton received Nobel price for their work in this field.
+
+![Robert C. Merton, Myron S. Scholes and Fischer S. Black](extdata/black_scholes_merton.png)
+
+Here we consider European options. Difference between European and American options is when option can be executed. European option can be executed only in agreed date whereas American option can be executed any time before expiration of the option.To be able to price an European call option one needs to know five things: price of the underlying asset, exercise price of the option, risk free rate, time to expiration and standard deviation of the underlying asset. Beauty of this model is that first four of these measures investor can know for sure. Only the future standard deviation of the asset is somewhat questionable. Standard deviation can be however estimated for example from historical prices. According to Black-Scholes method price of the option can be calculated by:
+
+\begin{center}
+$C_0 = S_0N(d_1)-Xe^{-rT}N(d_2)$
+\end{center}
+
+Where:
+\begin{center}
+$d_1 = \frac{ln \frac{S_0}{K} + (r+\frac{\sigma^2}{2})t}{\sigma \sqrt{t}}$
+\end{center}
+and:
+\begin{center}
+$d_2 = \frac{ln \frac{S_0}{K} + (r-\frac{\sigma^2}{2})t}{\sigma \sqrt{t}}$
+\end{center}
+or:
+\begin{center}
+$d_2 = d_1 -\sigma \sqrt{t}$
+\end{center}
+
+So let's calculate price for Apple's call option with strike price of 165$, time to expiration is one month. First let's get the current price for Apple stock.
+```{r}
+library(ggplot2)
+library(data.table)
+
+# Since most recent data that quandl provides is from 2018, I am going to 
+# download data from Yahoo finance manually. 
+prices <- as.data.table(fread("extdata/AAPL.csv"))
+prices <- prices[, c("Date", "Adj Close")]
+prices <- prices[, "Log_Return" := c(NA, diff(log(prices$`Adj Close`), lag=1))]
+
+summary(prices)
+
+strike_price <- 160
+time <- 30/365
+risk_free_rate <- 0.00398
+price <- tail(prices$`Adj Close`, n=1)
+
+# Volatility is calculate using historical prices
+ann_volatility <- sd(prices$Log_Return, na.rm = T)*sqrt(12)
+```
+
+Now we have everything we need for calculating price for option. First we need to calculate d1 and d2.
+```{r}
+d1 <- (log(price/strike_price) + (risk_free_rate +
+            ann_volatility^2/2)*time)/(ann_volatility*sqrt(time))
+d2 <- d1 - ann_volatility*sqrt(time)
+```
+
+Now we can calculate option premium.
+```{r}
+option_price <- price*pnorm(d1) - strike_price*exp(-risk_free_rate*time) *
+  pnorm(d2)
+```
+
+
+- Calculate call option price for example Apple stock
+- Implied volatility
+- CVaR revisited with new volatilities

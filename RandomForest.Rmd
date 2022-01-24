@@ -1,0 +1,18 @@
+---
+title: "Random Forest"
+author: "Jesse Keränen"
+date: "12/8/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
+```
+
+```{r}
+library(readxl)
+
+data_dt <- read_excel("extdata/nokia.xlsx")
+```
+

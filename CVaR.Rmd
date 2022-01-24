@@ -1,0 +1,159 @@
+---
+title: "Conditional Value at Risk"
+author: "Jesse Keränen"
+date: "11/20/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
+```
+
+# Prologue
+
+Value at risk is commonly used measurement in finance. It still has it's weaknesses. It doesn't for example say anything what happens after VaR level. For example if we have value at risk lets say -11,0% with confidence level of 95%, we don't know anything what happens in even worse scenarios. Fortunately conditional value at risk gives some insight to this problem. Conditional value at risk, or expected shortfall, gives us expected losses that occur beyond the VaR.
+\begin{center}
+$CVaR = \frac{1}{1-\alpha}\int_{-1}^{VaR}xp(x)dx$
+\end{center}
+Nevertheless CVaR doesn't bring solution to all VaR's problems, like assumption of distribution of returns. In this file I am not going to calculate portfolio VaR again since it is already calculated in VaR-file, instead I am going to take VaR as given.
+
+Next I collect the data. This part is commented more precisely on VaR file.
+```{r message=FALSE}
+library(Quandl)
+library(data.table)
+library(tidyverse)
+library(ggplot2)
+library(moments)
+
+Quandl.api_key("bx1qdehfWXg6SNKnicQC")
+
+names <- c("AAPL", "MSFT", "TSLA", "GOOGL", "AMZN")
+weights <-c(0.3, 0.1, 0.2, 0.2, 0.2)
+conf_level <- 0.05
+
+# For monthly data use collapse = "monthly"
+prices <- as.data.table(Quandl(c("WIKI/AAPL.11","WIKI/MSFT.11",
+        "WIKI/TSLA.11", "WIKI/GOOGL.11", "WIKI/AMZN.11"), start_date
+        = "2010-07-01", end_date = "2015-02-01"))
+
+colnames(prices) <- c("Date", "AAPL", "MSFT", "TSLA", "GOOGL", "AMZN")
+
+# Tidying data table
+prices <- melt(prices, id.vars = "Date", measure.vars = names, variable.name
+               = "Company", value.name = "Adj_Close")
+
+# Calculate price changes. Check this might be wrong!!!
+prices[, Return := Adj_Close/shift(Adj_Close) -1, by = Company]
+
+# Add the weights
+prices <- merge(data.table(Company = c("AAPL", "MSFT", "TSLA", "GOOGL",
+          "AMZN"), Weight = c(0.3, 0.1, 0.2, 0.2, 0.2)), prices, by =  
+            "Company")
+
+prices <- drop_na(prices)
+
+mean_std <- prices[, .(means = mean(Return), stds = sd(Return)), by= Company]
+cov_matrix <- cov(as.data.table(split(prices[,5] ,prices$Company)))
+cov_matrix
+
+port_ret <- weights %*% mean_std$means
+
+port_std <- sqrt(weights %*% cov_matrix %*% matrix(weights))
+```
+
+## Parametric CVaR
+
+In file VaR I calculated value at risk for portfolio containing shares of Apple, Amazon, Microsoft, Tesla and Google. First I calculated VaR using so called variance covariance method. Now we calculate also CVaR using parametric methods.
+
+### Normal distribution
+
+First We again assume normal distribution of returns of our portfolio. This isn't on many cases too realistic assumption, but we are going to live with it. Expected value of normally distributed random variable is given by :
+\begin{center}
+$E(X) = \int_{-\infty}^\infty x f(x)dx$
+\end{center}
+where:
+\begin{center}
+$f(x) = \frac{1}{\sqrt{2 \pi}}e^{\frac{-x^2}{2}}$
+\end{center}
+Parametric value of value at risk is given by:
+\begin{center}
+$VaR=\mu+z\sigma$
+\end{center}
+Where z is z-score of confidence interval. If we replace z value by the probability density function of normally distributed varibale and multiply it by $\frac{1}{\alpha}$ we get:
+\begin{center}
+$CVaR=\mu+\frac{1}{\alpha}\frac{1}{\sqrt{2 \pi}}e^{\frac{-z^2}{2}}\sigma$
+\end{center}
+Where $\mu$ is expected return of the portfolio, $\alpha$ is confidence lelvel, z is value of inverse cumulative distribution function on given confidence level and $\sigma$ is standard deviation of the portfolio.
+```{r}
+z <- qnorm(conf_level)
+CVaR1 <- port_ret - 1/conf_level*1/sqrt(2*pi)*exp(-1/2*z^2)*port_std
+CVaR1
+```
+
+### Cornish-Fisher expansion
+
+As we already mentioned earlier, assumption of normal distribution of portfolio returns might not be quite realistic. We can take a closer look to this by calculating portfolio return for each day in our data set. This can be simply done by multiplying each days returns with weights.
+```{r}
+daily_port_ret <- prices %>% group_by(Date) %>% mutate(weighted_return =
+              Weight*Return) %>% summarise(Portfolio_return =
+              sum(weighted_return))
+
+ggplot(daily_port_ret, aes(Portfolio_return)) + 
+        geom_histogram(aes(y=..density..), bins = 100) +
+        stat_function(fun = dnorm, args = list(mean = 
+        mean(daily_port_ret$Portfolio_return), 
+        sd = sd(daily_port_ret$Portfolio_return)), color = "red")
+```
+As expected returns of our portfolio aren't precisely normally distributed. Extreme profits and losses seem to be more usual than normal distribution suggest. Fortunately we can also use other distributions that follow better distribution of our returns, when we estimate VaR. 
+  We can use Cornish-Fisher expansion but we need to find couple of new variables before that. Namely skewness and kurtosis. Both of these describe shape of probability distribution. Skewness measures symmetry of p.d.f and kurtosis extremity of outliers. Looking at the picture above it's hard to say anything about the skewness of the distribution, kurtosis seems to be positive. Luckily we can easily calculate both of these values on R. 
+```{r}
+skewness <- skewness(daily_port_ret$Portfolio_return)
+kurtosis <- kurtosis(daily_port_ret$Portfolio_return)
+```
+
+Calculations prove our hypothesis, skewness seems to be slightly positive where as kurtosis is more strongly positive. Our data has fatter tails than normally distributed variable would have. This mean that extreme profits and losses are more usual. Nevertheless distribution of returns of our portfolio seems to be quite symmetric.
+  Now that we know skewness and kurtosis we can apply actual Cornish-Fisher expansion. Lets start with VaR, since we didn't calculate VaR using Cornish-Fisher expansion in our VaR-file. We get VaR by:
+\begin{center} 
+$VaR = \mu + Z_\alpha \sigma$
+\end{center}
+where:
+\begin{center}
+$Z_\alpha = z_\alpha+(z_\alpha^2-1)\frac{S}{6}+z_\alpha(z_\alpha^2-3)\frac{K}{24}-z_\alpha^2(2z_\alpha^2-5)\frac{S^2}{36}$
+\end{center}
+Where S and K stand for skewness and kurtosis. Since we now have all variables we need we can simply plug them and calculate the VaR.
+```{r}
+w <- z + (z^2-1)*skewness/6+z*(z^2-3)*kurtosis/24-z*(2*z^2-5)*skewness^2/36
+VaR3 <- port_ret + w*port_std
+VaR3
+```
+
+Next we can calculate CVaR by
+\begin{center}
+$CVaR = \mu+Z_\alpha\sigma$
+\end{center}
+Where now 
+\begin{center}
+$Z_\alpha=\frac{1}{\alpha}\frac{1}{\sqrt2\pi}e^{\frac{-1}{2}z_\alpha^2}[1+z_\alpha(\frac{S}{6})+(1-2z_\alpha^2)(\frac{S^2}{36})+(-1+z_\alpha^2)(\frac{K}{24})]$
+\end{center}
+```{r}
+w <- -1/conf_level*1/sqrt(2*pi)*exp(-1/2*z^2)* (1+z*(skewness/6)+(1-2*z^2)*
+     (skewness^2/36)+(-1+z^2)*(kurtosis/24))
+CVaR2 <- port_ret + w*port_std
+CVaR2
+```
+We get some what interesting results. In five percent confidence level our CVaR calculated with normal distribution assumption is higher than VaR calculated Cornish-Fischer expansion. In one percent confidence level this changes CFVaR becomes larger than our first CVaR. In both of these cases CFCVaR is largest. This is quite intuitive.
+
+## Monte Carlo CVaR
+
+In VaR file I also simulated VaR for the portfolio with Monte Carlo simulation using geometric Brownian Motion. From this set of possible outcomes calculating CVaR is pretty straight forward. Since we have n amount of possible outcomes, probability of one outcome is 1/n. We get CVaR simply by multiplying each outcome worse than VaR by 1/n and the summing all these together. 
+
+
+# References:
+https://faculty.washington.edu/ezivot/econ589/ssrn-id1997178.pdf
+
+https://en.wikipedia.org/wiki/Cornish%E2%80%93Fisher_expansion
+
+https://en.wikipedia.org/wiki/Expected_shortfall
+
+https://fabianmoa.com/2020/04/25/value-at-risk-var-conditional-value-at-risk-cvar-in-excel-historical-gaussian-cornish-fisher/
