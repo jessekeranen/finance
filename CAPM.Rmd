@@ -256,13 +256,18 @@ a <- data.table(Dates = as.Date(character()), Company = character(), V1 = numeri
 # Function to calculate betas for every stock
 # Calculated beta using all data before given date
 calculate_beta <- function(a, dt, date){
-  d <- dt[Dates < date, cov(Return, Market_Return)/var(Market_Return),
+  d <- dt[Dates < date,
+          if(length(Return) > 24){
+            cov(Return, Market_Return)/var(Market_Return)
+            }
+          else {NA_real_},
           by = Company]
   d[, Dates := as.Date(date)]
   a <- rbind(a, d, fill=T)
   return(a)
 }
 betas <- rbindlist(lapply(dates, function(t){calculate_beta(a, omxh, t)}))
+betas <- drop_na(betas)
 
 omxh <- merge(omxh, betas, by = c("Dates", "Company"))
 colnames(omxh)[ncol(omxh)] <- "Beta"
@@ -275,8 +280,8 @@ omxh
 Now that we have calculated betas for every stock we can start constructing portfolios. 
 
 ```{r}
-omxh[Beta < -2 | Beta > 5, Beta := NA]
-omxh <- drop_na(omxh)
+# omxh[Beta < -2 | Beta > 5, Beta := NA]
+# omxh <- drop_na(omxh)
 
 # Perform allocation each February
 omxh[month(Dates) == 2, Portfolio := cut(Beta, c(-Inf, quantile(Beta, probs = seq(0.2, 0.8, by = 0.2)), Inf), include.lowest=TRUE, labels=FALSE), by = Dates]
@@ -297,24 +302,53 @@ ggplot(data = omxh[Dates == "2016-02-29"], aes(as.factor(Portfolio), Beta)) +
 
 # Calculate portfolio returns
 portfolio_return <- omxh[, mean(Return), by = list(Portfolio, Dates)]
+colnames(portfolio_return)[3] <- "Portfolio_Return"
+
 # Cumulative returns
-portfolio_return[, Cum_Return := cumprod(1+V1), by = Portfolio]
+portfolio_return[, Cum_Return := cumprod(1+Portfolio_Return), by = Portfolio]
 
 # Check if there are patterns in returns
-portfolio_return[, mean(V1), by = Portfolio]
+portfolio_return[, mean(Portfolio_Return), by = Portfolio]
 
 ggplot(portfolio_return, aes(Dates, Cum_Return, color = as.factor(Portfolio))) + geom_line()
-
-ggplot(portfolio_return, aes()) + geom_point()
 ```
 
 
 now calculate portfolio betas
 
 ```{r}
-portfolio_return[, Beta := cov(V1, market_return3[Dates >=
+library(tidyverse)
+
+portfolio_return[, Portfolio_Beta := cov(Portfolio_Return,
+  market_return3[Dates >=
   "2014-02-28"]$Market_Return)/ var(market_return3[Dates >=
   "2014-02-28"]$Market_Return), by = Portfolio]
+
+market_return3[, Dates := as.Date(Dates)]
+
+portfolio_return <- merge(portfolio_return, market_return3[, .(Dates, Market_Return)], by = "Dates") %>% merge(., r_f2, by = "Dates")
+
+portfolio_return[, Expected_Return := mean(RF) + Portfolio_Beta*(mean(Market_Return) - mean(RF)), by = "Portfolio"]
+
+portfolio_return[, .(mean(Expected_Return), mean(Portfolio_Return)), by = Portfolio]
+
+ggplot(portfolio_return[, .(mean(Expected_Return), mean(Portfolio_Return)), by = Portfolio], aes(as.factor(Portfolio), V1, color = "Expected")) + geom_point() + geom_point(aes(as.factor(Portfolio), V2, color = "Realized")) 
+
+
+omxh <- merge(omxh, portfolio_return, by = c("Dates", "Portfolio"))
+
+# Run a cross sectional regression for each date
+cross_sect <- lapply(dates, function(t){lm(data = omxh[Dates == t], Return ~ Portfolio_Beta)})
+
+
+coefficients <- lapply(cross_sect, function(t){coef(t)})
+coefficients <- as.data.table(do.call(rbind, coefficients))
+
+n <- nrow(coefficients)
+
+coefficients[, .(mean(`(Intercept)`), mean(Portfolio_Beta))]
+coefficients[, .(mean(`(Intercept)`)/(sd(`(Intercept)`)/sqrt(n)),
+                 mean(Portfolio_Beta)/(sd(Portfolio_Beta)/sqrt(n)))]
 ```
 
 
