@@ -216,7 +216,7 @@ nokia_2008
 
 According to Cap-model one should have been willing to pay anything below ~24.3 for Nokia's stock in beginning of 2008. It is easy to look back in history and say that for one year investment period investor shouldn't have pay even half of that and for even longer period not even one tenth of that price. By the time of it's creation, Cap-model groundbreaking. Nevertheless empirical tests have shown that Cap-model doesn't do too good job explaining stock returns. We have more or less data from whole Finnish stock market from 2011 to 2020 in our famafrench-file. Let's test if Cap-model is dead for recent Finnish stock market data.
 
-# Fama-Mcbeth
+# Fama-Macbeth
 
 I use equally weighted portfolios.
 
@@ -343,12 +343,24 @@ cross_sect <- lapply(dates, function(t){lm(data = omxh[Dates == t], Return ~ Por
 
 coefficients <- lapply(cross_sect, function(t){coef(t)})
 coefficients <- as.data.table(do.call(rbind, coefficients))
+```
 
+According to Fama and MacBeth (1973) we get our time series estimates and their t-statistics by:
+
+\center{begin}
+$\overline \gamma_j=\frac{1}{T}\sum_{t=1}^T\gamma_{j,t}$
+
+$t-stat(\overline \gamma_j)=\frac{\overline \gamma_j}{\sigma(\overline\gamma_j)/\sqrt n}$
+\center{end}
+
+```{r}
 n <- nrow(coefficients)
 
+# Time series averages
 coefficients[, .(mean(`(Intercept)`), mean(Portfolio_Beta))]
+
+# T-statistics
 coefficients[, .(mean(`(Intercept)`)/(sd(`(Intercept)`)/sqrt(n)),
                  mean(Portfolio_Beta)/(sd(Portfolio_Beta)/sqrt(n)))]
 ```
-
 

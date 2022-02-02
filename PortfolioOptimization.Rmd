@@ -127,6 +127,8 @@ opt <- optim(weights,(function(x) penalized_function(x, alpha, objective)))
 min_var_ret <- mean_std$means %*% matrix(opt[[1]]) * 12
 min_var_std <- opt[[2]]
 
+min_var <- data.table(sd = min_var_std, return = as.numeric(min_var_ret))
+
 ggplot(dt, aes(dt$port_std, dt$port_return, color=dt$port_sharpe)) + geom_point() + labs(x = "Standard Deviation", y = "Annual Return", color = "Sharpe Ratio") +
   geom_point(aes(min_var_std, min_var_ret), color = "red")
 ```
@@ -180,11 +182,15 @@ for(i in 1:n){
 }
 pop <- as.data.table(pop)
 
-ggplot(dt, aes(dt$port_std, dt$port_return, color=dt$port_sharpe)) + geom_point() +
+plot <- ggplot(dt, aes(dt$port_std, dt$port_return, color=dt$port_sharpe)) + geom_point() +
   labs(x = "Standard Deviation", y = "Annual Return", color = "Sharpe Ratio") +
-  geom_point(aes(min_var_std, min_var_ret), color = "red") + 
+  geom_point(data = min_var, aes(sd, return), color = "red") + 
   geom_point(aes(hr_comp$means*12, hr_comp$stds*sqrt(12)), color = "red") + 
   geom_line(data = pop, aes(pop$V2, pop$V1), color = "red")
+
+saveRDS(plot, "extdata/efficient_frontier.rds")
+
+plot
 ```
 We can see that our efficient frontier lands quite nicely where we estimated it to land with random portfolios. Next would might be interesting to see how weights on the assets change on different risk levels.
 ```{r}
