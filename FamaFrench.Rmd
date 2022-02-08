@@ -208,7 +208,7 @@ colnames(portfolio_returns) <- c("Portfolio", "Return", "Date")
 
 After calculating the portfolio returns we can start the interesting part. Let's first look for a patterns in portfolio returns.
 ```{r}
-portfolio_returns[, Cum_Return := cumsum(Return), by = Portfolio]
+portfolio_returns[, Cum_Return := cumprod(1+Return), by = Portfolio]
 
 ggplot(portfolio_returns, aes(Date, Cum_Return, color=Portfolio)) +
   geom_line()

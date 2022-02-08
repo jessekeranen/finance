@@ -115,6 +115,7 @@ opt <- optim(weights,(function(x) penalized_function(x, alpha, objective)))
 ```
 
 If we use Sharpe ratio to measure how good our portfolio is we have found the optimal portfolio. If we also believe Tobin's separation theorem we wouldn't have to bother our heads about other portfolios lying on the efficient frontier. Nevertheless this would require us to be able to lend and borrow at risk free rate, which in real life isn't too realistic assumption. Since investors have different risk bearing levels, we have to calculate optimal portfolio for other risk levels as well. Since we know that the return of the portfolio is weighted average of the returns of the assets in it, we know that return of the portfolio can't exceed the return of the return of the asset with highest expected return. However we can't make similar assumption about the minimum variance portfolio, because of the correlations. Yet we can estimate minimum variance portfolio by chancing little bit our objective function. After finding the return (or risk) of the minimum variance portfolio we can increment our desired return (or risk) level little by little and calculate optimal portfolio for each level until we reach return of the highest return asset. This way we can approximate our efficient frontier. Lets start with finding minimum variance portfolio.
+
 ```{r}
 # Now the objective function minimizes portfolio variance. 
 objective <- function(returns, x, cov){
