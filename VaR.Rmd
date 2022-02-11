@@ -16,8 +16,6 @@ knitr::opts_chunk$set(echo = TRUE)
 
 In this document I calculate value at risk estimates for a portfolio formed of given assets. Some calculations could might have been done easier using some libraries, but I have tried, within my R skills, to avoid using too much libraries. Value at risk (VaR) is risk measurement used for example in finance. VaR tells investor what is the greatest loss investor will face with given probability.
 
-
-
 ## Data collection
 
 Download adjusted prices of the stocks and adjust data. Data is downloaded from Nasdaq's Quandl data base. For each asset adjusted closing price is selected, so that there is no need to take for example dividends into consideration.
