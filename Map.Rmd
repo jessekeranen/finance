@@ -1,0 +1,23 @@
+---
+title: "map"
+author: "Jesse Keränen"
+date: "2/18/2022"
+output: pdf_document
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(leaflet)
+library(magrittr)
+
+m <- leaflet(options = leafletOptions(zoomControl = FALSE)) %>%
+  addTiles() %>%  # Add default OpenStreetMap map tiles
+  addMarkers(lng=174.768, lat=-36.852, popup="The birthplace of R")
+
+m
+```
+

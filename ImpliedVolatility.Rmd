@@ -1,0 +1,68 @@
+---
+title: "Implied volatility"
+author: "Jesse Keränen"
+date: "2/15/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+# Download historical volatility values from Quandl
+vol <- as.data.table(Quandl(c("VOL/MSFT"), start_date
+        = "1983-01-01", end_date = "2021-01-01"))
+
+
+# We only choose 20 day realized and implied volatilities
+volatility <- vol[, .(Date, Hv20, IvMean20)]
+
+# Let's check how well implied volatility correlates with realized
+volatility[, lagged := shift(Hv20, -20)]
+volatility <- drop_na(volatility)
+volatility[, cor(IvMean20, lagged)]
+
+ggplot(volatility, aes(IvMean20, lagged, color = Date)) + geom_point() + geom_smooth(method="lm")
+
+# Regressing realized volatility with implied
+summary(lm(data = volatility, lagged ~ IvMean20))
+
+# Load predictions from Random Forest file
+predictions <- readRDS("extdata/rnd_forest_result.Rda")
+
+# We don't need all the information. Merge with volatility datatable
+predictions <- merge(predictions[, .(Date, Adj_Close_Smooth, Sign, pred, Mean)],
+                     volatility[, .(Date, IvMean20, Hv20)], by = "Date")
+
+# Calculation will be easier if we change factors to numeric form
+predictions[, pred := as.numeric(as.character(pred))]
+predictions[, Sign := as.numeric(as.character(Sign))]
+
+# Calculate predicted return
+predictions[, Pred_Return := pred*IvMean20/sqrt(12)]
+
+# Multiply t-1 realized price with predicted return
+predictions[, Pred_Price := Adj_Close_Smooth]
+for(i in 2:predictions[, .N]){
+  predictions$Pred_Price[i] = predictions$Adj_Close_Smooth[i-1] * (1+predictions$Pred_Return[i])
+}
+
+# Calculate realized monthly returns
+predictions[, Adj_Return := Adj_Close_Smooth/shift(Adj_Close_Smooth)-1]
+predictions$Adj_Return <- shift(predictions$Adj_Return, -1)
+predictions <- drop_na(predictions)
+
+# Correlation between realized and predicted returns
+predictions[, cor(Adj_Return, Pred_Return)]
+
+# Regress realized returns with predicted returns
+summary(lm(data = predictions, Adj_Return ~ Pred_Return))
+
+ggplot(predictions, aes(Pred_Return, Adj_Return)) + geom_point() + geom_smooth(method = "lm")
+
+ggplot(predictions, aes(x=Date)) + geom_line(aes(y=Pred_Price), color = "darkblue") + geom_line(aes(y=Adj_Close_Smooth), color="darkred")
+```
+

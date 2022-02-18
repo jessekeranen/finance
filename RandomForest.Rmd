@@ -6,7 +6,7 @@ output: pdf_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(comment=NA)
 rm(list = ls())
 ```
 
@@ -14,7 +14,7 @@ rm(list = ls())
 
 One thing every investor would like to know is whether price of the given asset goes up or down next day. If investor would also know the magnitude of the change trading would become pretty easy. One attempt to solve this problem has been to use machine learning algorithms and volatility factors to predict the sign of the change of asset. Some researches go so far that they even try to estimate how much the asset is going to change in given time period. This makes them possible to use in portfolio optimization. In this file I am only going to try to estimate if price of one asset is going go up or down using random forest algorithm.
 
-```{r message=F}
+```{r message=F, warning=F}
 library(ggplot2)
 library(Quandl)
 library(tidyverse)
@@ -25,12 +25,15 @@ library(caret)
 library(rpart)
 library(randomForest)
 library(lubridate)
+library(plotROC)
+library(quantmod)
+
 
 Quandl.api_key("bx1qdehfWXg6SNKnicQC")
 
 # For monthly data use collapse = "monthly"
-price <- as.data.table(Quandl(c("WIKI/PG"), start_date
-        = "1983-01-01", end_date = "2021-12-31", collapse = "daily"))
+price <- as.data.table(Quandl(c("WIKI/MSFT"), start_date
+        = "1983-01-01", end_date = "2021-01-01", collapse = "daily"))
 
 price <- price[, .(Date,`Adj. Open`, `Adj. High`, `Adj. Low`, `Adj. Close`, 
                    `Adj. Volume`)]
@@ -39,9 +42,6 @@ price <- na.omit(price)
 colnames(price) <- c("Date", "Adj_Open", "Adj_High", "Adj_Low", "Adj_Close", "Adj_Volume")
 
 price <- price[order(Date)]
-
-price[, "Adj_Return" := Adj_Close/shift(Adj_Close) -1]
-price <- na.omit(price)
 ```
 
 # Data smoothing
@@ -59,14 +59,14 @@ alpha <- 0.2
 price[, Adj_Close_Smooth := alpha * Adj_Close + (1-alpha)*shift(Adj_Close)]
 price[1, Adj_Close_Smooth := Adj_Close]
 
+price[, Adj_Return := Adj_Close_Smooth/shift(Adj_Close_Smooth)-1]
+
 # In the big picture it is hard to see any difference between smoothed and not
 # smoothed prices
 ggplot(price, aes(Date, Adj_Close)) + geom_line(color = "darkblue") + geom_line(aes(Date, Adj_Close_Smooth), color = "darkred")
 
 # When you look shorter period, effect of smoothing can be seen
 ggplot(price[year(Date) == 2000 & month(Date) >= 1 & month(Date) >= 6], aes(Date, Adj_Close)) + geom_line(color = "darkblue") + geom_line(aes(Date, Adj_Close_Smooth), color = "darkred")
-
-ggplot(price, aes(Date, Adj_Return)) + geom_line()
 ```
 
 # Explanatory variables
@@ -90,7 +90,10 @@ for(i in 2:price[, .N]){
     price$Adj_Volume[i]
 }
 
-ggplot(price, aes(x = Date)) + geom_line(aes(y = Adj_Close), color = "darkblue") + geom_line(aes(y =   OBV/20000000), color = "darkred") + 
+# There would be easier way
+# price[, OBV := OBV(Adj_Close_Smooth, Adj_Volume)]
+
+ggplot(price, aes(x = Date)) + geom_line(aes(y = Adj_Close), color = "darkblue") + geom_line(aes(y =   OBV/200000000), color = "darkred") + 
   scale_y_continuous(
     # Features of the first axis
     name = "First Axis",
@@ -109,10 +112,9 @@ $K=100*\frac{P_t-Low_K}{High_K - Low_K}$
 Stochastic Oscillator tries to predict turning point of price movement. Many times is said that asset is overbought when Stochastic Oscillator get values greater than 80 and oversold when it gets values below 20. It is important to remember that asset can remain overbought or oversold for long periods if the price of the asset is trending up or down. I have understood that this measure indicates possible overshooting in the markets.
 
 ```{r warning=F}
-stoch_osc <- function(data,t, K){
+stoch_osc <- function(data, t, K){
   P <- data[Date == t, Adj_Close_Smooth]
-  dt <- data[Date <= t & Date > as.Date(t) - K, .(Adj_Close_Smooth, Adj_High,
-              Adj_Low)]
+  dt <- tail(data[Date <= t, .(Date, Adj_Close_Smooth, Adj_High, Adj_Low)], K)
   return(100*(P-min(dt$Adj_Low))/(max(dt$Adj_High)-min(dt$Adj_Low)))
 }
 
@@ -120,7 +122,10 @@ K <- 14
 price[, OSC := as.numeric(rbind(lapply(price$Date, function(t){stoch_osc(price,
       t, K)})))]
 
-class(price$OSC)
+# Better way with quantmod
+# lk <- stoch(as.matrix(price[, .(Adj_High, Adj_Low, Adj_Close_Smooth)]), 
+#                        nFastK = 14)*100
+# price[, OSC := lk[, "fastK"]]
 
 ggplot(price[year(Date) > 2017], aes(Date, OSC)) + geom_line()
 ```
@@ -149,47 +154,198 @@ price[, EMA26 := movavg(Adj_Close_Smooth, 26, type="e")]
 price[, MACD := EMA12 - EMA26]
 price[, SignalMACD := movavg(MACD, 9 , type ="e")]
 
-ggplot(price[year(Date) == 2016], aes(x = Date)) + geom_line(aes(y = MACD), color = "darkblue") + geom_line(aes(y = SignalMACD), color = "darkred") + geom_line(aes(y = scale(Adj_Close_Smooth)), color = "darkgreen")
+# With quantmod
+# MACD <- MACD(price$Adj_Close_Smooth, nFast = 12, nSlow = 26, nSig = 9)
+# price[, MACD := MACD[, "macd"]]
+# price[, SignalMACD := MACD[, "signal"]]
+
+ggplot(price[year(Date) == 2016], aes(x = Date)) + geom_line(aes(y = MACD),
+      color = "darkblue") + geom_line(aes(y = SignalMACD), color = "darkred") +
+      geom_line(aes(y = scale(Adj_Close_Smooth)), color = "darkgreen")
 ```
+
+## Relative Strength Index
+
+Relative strength index is once again a momentum indicator used by investors to recognize overbought and oversold situations. It measures magnitude of price changes within given time period. Many times 14 days is used as time period. As a rule of thumb asset is considered overbought (over valued) if RSI is over 70 and oversold (under valued) when it is less than 30.
+
+$If \ close > close_{t-1} \ then,$
+
+$\quad{up = close-close_{t-1}}$
+
+$\quad{down = 0}$
+
+$Else$
+
+$\quad{up = 0}$
+
+$\quad{down = close_{t-1}-close}$
+
+```{r}
+n <- 14
+price[, RSI := NA]
+price[, RS := NA]
+
+price[, Change := Adj_Close_Smooth - shift(Adj_Close_Smooth)]
+price[, Up := pmax(Change, 0)]
+price[, Down := abs(pmin(Change, 0))]
+price[1:14, Av_UM := mean(Up, na.rm = T)]
+price[1:14, Av_DM := mean(Down, na.rm = T)]
+
+
+for (i in (n+1):price[, .N]){
+  price$Av_UM[i] <- (price$Av_UM[i-1]*(n-1) + price$Up[i])/n
+  price$Av_DM[i] <- (price$Av_DM[i-1]*(n-1) + price$Down[i])/n
+  
+  price$RS[i] <- price$Av_UM[i]/price$Av_DM[i]
+  price$RSI[i] <- 100 -  (100/(1+(price$RS[i])))
+}
+
+# Could have been made much easier and faste by:
+# price[, RSI :=  RSI(Adj_Close_Smooth, n=14)]
+
+price <- drop_na(price)
+head(price)
+```
+
 
 # Random forest
 
-Before we can start training our model we have to change create our outcome variable. We define that it can have values +1, 0 and -1, depending on direction where smoothed price has moved in given time period. We will use first 20 days period.
+Before we can start training our model we have to change create our outcome variable. We define that it can have values +1 or -1, depending on direction where smoothed price has moved in given time period. We will use first 20 days period. This is a parameter for which we probably should try different values. I believe that something like 20 days would be good starting point. I have seen other studies where longer time horizon improves prediction capability of the model. On the other hand due to transaction costs I would hope model to predict trend for longer period than couple of days.
 
 ```{r}
-price[, Sign := sign(log(Adj_Close_Smooth/shift(Adj_Close_Smooth, 21)))]
+price[, Sign := sign(log(shift(Adj_Close_Smooth, 20, type = "lead")/Adj_Close_Smooth))]
+price[Sign == 0, Sign := 1]
+price[, Sign := as.factor(Sign)]
+class(price$Sign)
 ```
 
+Before we can use random forest we need to take a look on decision trees. A decision tree is a supervised machine learning algorithm. Idea of the decision trees is to understand data by dividing it based on the characteristics. It will split the data until it can not classify it more clearly anymore. How this is measured? There are several methods. One of them is to minimize Gini impurity. 
 
-```{r warning=F}
+\begin{center}
+$Gini\ impurity = 1 - \sum p_i^2$
+\end{center}
+
+If we think of a classification problem, let's say with values 0 and 1. Then $p_0$ would be the percentage of 0 of the all observations entered to that node. We can easily see that Gini impurity gets it's lowest value when all observations in the node are homogeneous. It will get values between 0.5 and 0. Algorithm keeps on splitting the data if it can find threshold values for splitting that increase Gini impurity. In classification problem class that node classifies observations is based on majority of classes of outcomes in training data in that node. So if we have binary outcome variable and majority of observation allocated to node have outcome one, then this node will predict one for observation that end up to this node.
+
+
+There is one major drawback with decision trees. They usually do very well explaining the data that they are constructed from, but when they are used for new data they perform way worse. This is called overfitting. One solution to this problem is to use Random Forest method. Random forest is a tree based machine learning algorithm. As one could guess from the name it is based on decision trees. In Random Forest instead of using whole data set, boot strap data set is created where observations are picked randomly. After that only subset of the variables is randomly chosen to build a decision tree in each step. This procedure will be repeated as many times as is declared, for example 200 times. When tested with new data, different decision trees in our forest probably give different results. Final result is again decided based on majority of results.
+
+```{r warning=F, message=F}
+library(devtools)
+library(randomForest)
+library(reprtree)
+
 price <- na.omit(price)
 
-feature_vars <- c("OBV", "OSC", "MACD", "SignalMACD")
+feature_vars <- c("OBV", "OSC", "MACD", "SignalMACD", "RSI")
 full_formula <- as.formula(paste(c("Sign ~ ", paste(feature_vars, collapse = " +
                                   ")), collapse = ""))
-smp_size <- floor(0.7 * nrow(price2))
+
+smp_size <- floor(0.8 * nrow(price))
+
+temp <- copy(price)
+train_indices <- sample(seq_len(nrow(temp)), size = smp_size)
+
+temp[train_indices, dataset:="train"]
+temp[-train_indices, dataset:="test"]
+
+
+# Example Random Forest tree, just for illustration purposes
+example_rf_classifier <- randomForest(full_formula, data = temp[train_indices],
+                            importance=TRUE, ntree = 1, maxnodes=10, mtry = 3)
+
+reprtree:::plot.getTree(example_rf_classifier)
+```
+
+There are several ways to measure performance of Random Forest model or other classification models. As mentioned we have a classification problem. This means that our response variable can get only two values. If model predicts that stock return is $Return_i \geq 0$ it will get value 1 and if it predicts that stock price goes down $Return_i<0$ it will give value -1. We also know the realized returns. When we factorize them they will also only get values -1 and 1. After we have done our predictions there are four different options: True positive means that model predicted price increase and price actually increased. True negative means that model predicted price decrease and price actually decreased. False positive means that model predicted price increase, but price actually decreased. False negative means situation where model predicts price decrease, but price increases. From these values we can derive performance metrics for our model, namely accuracy, sensitivity, specificity and precision.
+
+\begin{center}
+$Accuracy=\frac{TP+TN}{TP+FP+TN+FN}$
+\end{center}
+
+Accuracy is pretty intuitive measure. It measures how many observations model predicted correctly compared to all observations. Naturally we usually want to reach as high accuracy as possible.
+
+\begin{center}
+$Sensitivity = \frac{TP}{TP+FN}$
+\end{center}
+
+Sensitivity, sometime referred as recall, measures ratio between observations model correctly predicted to be positive and total number of positive observations. In this case it would mean how many of the stock increase periods model correctly predicted to be positive.
+
+\begin{center}
+$Specificity = \frac{TN}{TN+FP}$
+\end{center}
+
+Specificity can also be called true negative rate. This is opposite to sensitivity. It measures number of correctly predicted negatives compared to total negatives. Depending of the goal of the study, one can decide whether to focus on sensitivity or specificity. For example if it is important to predict all the positives correctly, but it doesn't harm to have false positives, one should focus on sensitivity.
+
+\begin{center}
+$Precision = \frac{TP}{TP+FP}$
+\end{center}
+
+Precision measures how many of the models positive predictions actually were positive. In stock return case precision would tell us how many percent of models price increase predictions actually were true.
+
+Before simulating the investment decision and dividing the data, let's first see how well our model works on the whole data. One way to visualize performance of the model is to plot a ROC curve. The receiver operating characteristic curve is a way of measuring model performance with different cutoff values. On the y axis it has sensitivity of the model and on x axis it has false positive rate with different cutoff values. What are these cutoff values?
+
+```{r warning=F}
+rf_classifier <- randomForest(full_formula, data = temp[train_indices], 
+                            importance=TRUE, ntree = 200, mtry = 3)
+
+temp[, Pred_Prob := predict(rf_classifier, type="prob", newdata = price)[, 2]]
+temp[, Pred_Outcome := predict(rf_classifier, type="class", newdata = price)]
+
+roc <- ggplot(temp, aes(d=Sign, m=Pred_Prob, color = dataset)) + geom_roc() + geom_abline()
+roc
+```
+
+I have to admit that I am not sure if I have understood intuition of ROC curve for random forest correctly. Nevertheless this is how I have understood it. As mentioned algorithm splits the data based on Gini impurity. It is possible that the final leaf isn't pure. Meaning that there could be observations with different outcomes in same leaf. By default majority of outcomes defines the leafs value. If you type in R predict function argument "type="prob"" it will give you probabilities of outcomes. So on default leafs with probability lower than 0.5 for up get down value and leafs with greater probability get up value. This 0.5 is called threshold value. 
+
+What the ROC curve does is that it changes the threshold values that define leaf's value and plot above mentioned values on these threshold values. One extreme case being that all outcome leafs would get positive value. Then all positives get positive values and sensitivity value is 1, but also all negatives get positive value and false positive fraction would get value of 1. We would end up in the up right corner. So the ROC curve plots the trade off between fraction of ups predicted correctly and fraction of downs predicted wrong. More homogeneous (meaning more extreme probabilities) leafs are, more towards the up left corner the curve is, since if majority of observations in leaf have same outcome chancing the threshold value doesn't change the leaf's value.
+
+Our ROC curve for train set seems pretty perfect. This isn't surprise since we didn't restrict the height of the tree. On the other hand model didn't perform as good with the test data, but it still did much better than random guess indicated by straight line. With same threshold values training and test data can have different values. It is possible that when we trained our model all observations that ended up in a leaf had positive value, which result homogeneous leaf. Nevertheless when we run test data observation that ends up to that leaf can have negative outcome value and therefore result a false positive. Basically ROC curve plot many confusion matrices once.
+
+```{r}
+# Confusion matrix with default threshold
+confusionMatrix(temp[-train_indices, Sign], temp[-train_indices, Pred_Outcome])$table
+```
+
+Some times instead of plotting ROC curve it could be convenient to just report a single number indicating the performance of our model. Luckily we have this kind of number. It is called area under curve. As the name indicates it measures the are under ROC curve. It will usually have values between 0.5 and 1. 1 being the best possible.
+
+```{r}
+calc_auc(roc)
+```
+
+Our goal is to deploy random forest for tool to investor. Above we saw some metrics how well our algorithm was capable to forecast stock movement direction. Next we are going to train our algorithm as before and after training we are going to give it next days information and let it forecast the direction. We do this for each month in our data set (not for the 16 first years). Then we check how many month algorithm forecast correctly. This is a bit like simulating investors decision making in the past. It is interesting to see how well or badly our algorithm worked compared to buy and forget strategy. Meaning in this set that you would every month expect stock to go up.
+
+```{r}
+start_date <- "2015-01-02"
+smh <- price[Date >= start_date]
+dates <- smh[endpoints(Date, "month")]$Date
+
+smp_size <- floor(0.8 * nrow(price[Date < dates[1]]))
 
 rand_forest <- function(dt, date){
   new_dt <- dt[Date == date]
   data <- dt[Date < date & Date >= as.Date(date) %m-% years(16)]
-  smp_size <- floor(0.7 * nrow(data))
+  smp_size <- floor(0.8 * nrow(data))
   train_indices <- sample(seq_len(nrow(data)), size = smp_size)
-  rf_classifier <- randomForest(full_formula, data = data[train_indices],
-                  ntree = 200, nodesize = 20, maxnodes = 7, mtry = 6)
-  return(data.table(Date = date, pred=predict(rf_classifier, newdata=new_dt)))
+  rf_classifier <- randomForest(full_formula, data = data[train_indices], 
+                            importance=TRUE, ntree = 200, mtry = 3)
+  return(data.table(Date = date, pred=predict(rf_classifier, newdata=new_dt,
+                                              type = "class")))
 }
-
-start_date <- "2004-01-01"
-smh <- price[Date >= start_date]
-dates <- smh[endpoints(Date, "month")]$Date
-
 
 pred <- rbindlist(lapply(dates, function(t){rand_forest(price, t)}))
 
-pred2 <- pred[, .(Date, sign(pred))]
+price[, Mean := mean(Adj_Return)]
 
-smh <- merge(price[, .(Date, Sign)], pred2, by = "Date")
+smh <- merge(price, pred, by = "Date")
 
-sum(smh$Sign == smh$V2)/171
+confusionMatrix(smh$Sign, smh$pred)
+smh[, ones := as.factor(replicate(length(smh$pred), 1))]
+confusionMatrix(smh$ones, smh$pred)
+
+# Save the results for later usage
+saveRDS(smh, file = "extdata/rnd_forest_result.Rda")
 ```
+
+Model seems to perform better than long only strategy. Accuracy of random forest model was 0.76 where as long only had accuracy of 0.63. It would be interesting to see how well random forest model would perform with other data. My hypothesis is that if there would be more bearish periods difference between these two strategies would increase. Long only strategy would suffer from each decreasing period, but I believe that our random forest model would be able to predict at least part of them. As said this need to be tested.
 
