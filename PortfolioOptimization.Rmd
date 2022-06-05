@@ -25,7 +25,7 @@ library(ggrepel)
 library(ggplot2)
 library(pheatmap)
 library(Quandl)
-library(tidyverse)
+#library(tidyverse)
 library(data.table)
 library(plotly)
 
@@ -48,7 +48,7 @@ prices <- melt(prices, id.vars = "Date", measure.vars = names, variable.name
 # Calculate simple price changes
 prices[, "Returns" := Adj_Close/shift(Adj_Close) -1, by = Company]
 
-prices <- drop_na(prices)
+prices <- na.omit(prices)
 help(ggplotly)
 ```
 

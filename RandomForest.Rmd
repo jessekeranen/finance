@@ -347,5 +347,5 @@ confusionMatrix(smh$ones, smh$pred)
 saveRDS(smh, file = "extdata/rnd_forest_result.Rda")
 ```
 
-Model seems to perform better than long only strategy. Accuracy of random forest model was 0.76 where as long only had accuracy of 0.63. It would be interesting to see how well random forest model would perform with other data. My hypothesis is that if there would be more bearish periods difference between these two strategies would increase. Long only strategy would suffer from each decreasing period, but I believe that our random forest model would be able to predict at least part of them. As said this need to be tested.
+Model seems to perform better than long only strategy. Accuracy of random forest model was 0.71 where as long only had accuracy of 0.63. It would be interesting to see how well random forest model would perform with other data. My hypothesis is that if there would be more bearish periods difference between these two strategies would increase. Long only strategy would suffer from each decreasing period, but I believe that our random forest model would be able to predict at least part of them. As said this need to be tested.
 

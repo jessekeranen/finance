@@ -1,0 +1,162 @@
+---
+title: "ARCH models"
+author: "Jesse Keränen"
+date: "2/24/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
+```
+
+# Prologue
+
+Many times we are interested in predicting the future return of the asset, but that is only half of the story. Sometimes it is important to be able to estimate future volatility of price of the asset. One can try to model volatility for example with autoregressive conditional heteroskedasticity models. In following we try to model volatility of one Finnish stock using different ARCH models.
+
+```{r warning=F, message=F}
+library(data.table)
+library(ggplot2)
+library(quantmod)
+library(grid)
+library(tidyr)
+library(forecast)
+
+ponsse <- as.data.table(getSymbols("PON1V.HE", auto.assign = F, periodicity = "daily"))
+#ponsse <- as.data.table(getSymbols("^GSPC", from = as.Date("2014-11-30"), to = as.Date("2019-11-30")))
+#ponsse <- as.data.table(GSPC)
+colnames(ponsse) <- c("Date", "Open", "High", "Low", "Close", "Volume", "Adj")
+ponsse[, Return := Adj/shift(Adj)-1]
+ponsse <- ponsse[, .(Date, Volume, Adj, Return)]
+
+ret <- ggplot(ponsse, aes(Date, Return)) + geom_line() + theme_minimal() +
+  theme(axis.title.x = element_blank(), axis.text.x = element_blank()) 
+
+vol <- ggplot(ponsse, aes(Date, Volume)) + geom_bar(stat = 'identity',
+              color="black") + theme_minimal() 
+
+grid.newpage()
+grid.draw(rbind(ggplotGrob(ret), ggplotGrob(vol), size = "last"))
+
+
+# Probably something wrong with the data
+ponsse[Return == 0, .N]
+
+ponsse <- na.omit(ponsse)
+```
+
+Usually when we have made estimations about volatility of an asset we have used variance or standard deviation, i.e. average squared deviations from the mean (and square root of it). If we look at the above chart representing time series of monthly returns of our asset we can somewhat see that high price changes seem to follow high price changes and low price changes normally follow low price changes. So, historical volatility seems to affect future volatility. We use this hypothesis as basis of our volatility modelling.
+
+# Number of lags
+
+Next we probably want to know persistent the lag effect is. For example if previous months volatility affects this months volatility, how about two or three months prior volatility. Here autocorrelation plots come handy. In autocorrelation plot variables correlation with its lagged values is plotted on y-axis and the length of lag in x-axis. R also plot confidence intervals for the correlations telling whether they are statistically significant.
+
+```{r}
+ggAcf(ponsse$Return)
+acf(na.omit(ponsse[, Return])) # %>% autoplot
+```
+
+From the graph we can see that correlation with one month lagged ($t_{-1}$) volatility significant. Plot also shows correlation for four month lagged ($t_{-1}$) volatility. This doesn't seem as intuitive as the first one since the two months between show very little correlation with volatility of $t_0$. One possible explanation is quarterly reports and volatility associated with their publishing. Quarterly reports are usually reported in three month cycles which draws some doubts over our explanation. That's why I will use only the one month lagged term.
+
+Other way to check if there are ARCH effects in the data, is to calculated residuals of each observation by substituting mean and squaring the residuals. Then one can simply regress time $t$ residuals with time $t-1$ residuals.
+
+```{r}
+ponsse2 <- ponsse[, .(Date, Return, Res = (Return - mean(Return)^2))]
+summary(lm(data = ponsse2, Res ~ shift(Res)))
+```
+
+
+# ARCH
+
+Usually ARCH models are noted as ARCH(p), where $p$ notes the number of lags used. Variance of stock returns is just squared mean of the deviations from the mean return. We can express each of these deviations by $\epsilon_t^2$. In ARCH model these residuals are considered consisting of two parts, random variable $z_t$ and time dependent standard deviation $\sigma_t$.
+
+\begin{center}
+$\epsilon_t = r_t - \mu$
+
+$\epsilon_t = \sigma_t + z_t$
+\end{center}
+
+In ARHC model main idea is that volatility of stock depends on previous volatility. Then the volatility of stock at time $t$ could be modeled as:
+
+\begin{center}
+$\sigma_t^2 = \alpha_0 + \alpha_1\epsilon_{t-1}^2$
+\end{center}
+
+Where $\alpha_0$ is unconditional volatility and $\alpha_1\epsilon_{t-1}^2$ describes effect of the last residual. What we are actually predicting is $\epsilon_t$, residual in time $t$. We can estimate it with function:
+
+\begin{center}
+$\epsilon_t = \sqrt{\alpha_0 + \alpha_1\epsilon_{t-1}^2} + z_t$
+\end{center}
+
+Problem is that we don't know $\alpha_0$ and $\alpha$. One way to estimate them is to maximize log likelihood function. We have to calculate log likelihood value for each observation:
+
+\begin{center}
+$L(\mu, \omega, \alpha) = \frac{1}{\sqrt{2\pi\sigma_t}}e^{-\frac{\epsilon_t^2}{2\sigma_t^2}}$
+\end{center}
+
+We can set initial values for variables $\mu$, $\omega$ and $\alpha$ and maximize sum of logarithms of likelihood values. Note: also $\mu$ used to calculate residuals is variable in maximization. 
+
+```{r}
+library(tseries)
+library(readxl)
+
+mean <- ponsse[, mean(Return)]
+sd <- ponsse[, sd(Return)]
+var <- ponsse[, var(Return)]
+
+options(scipen=9999)
+
+# Returns list containing objective function value and constraint values
+objective <- function(variables, dt) {
+  dt[, Res := (Return - variables[1])^2]
+  dt[, LRes := shift(Res)]
+  dt[, Con.Var := variables[2] + variables[3]*LRes]
+  dt$Con.Var[1] <- variables[2]
+  dt[, Log.Like := log(1/sqrt(Con.Var*2*pi)*exp(-Res/(2*Con.Var)))]
+  return (list(-(sum(dt$Log.Like)), c(variables[2:3], 1 - variables[3])))
+}
+
+# Penalty function. Gets bigger values when constraints are violated
+alpha <- function(x, f, ponsse) {
+  constrains <- f(x, ponsse)
+  return (sum(min(constrains[[2]], 0))^2)
+}
+
+# Sum of objective function and penalty function values. Gives optimizer desire to obey constraints
+penalized_function <-function(x, alpha, objective, ponsse) {
+  return (objective(x, ponsse)[[1]] + r*alpha(x, objective, ponsse))
+}
+
+r <- 10
+opt <- optim(c(mean, var, 0.001), (function(x) penalized_function(x, alpha, objective, ponsse)))
+opt$par
+
+
+ggplot(ponsse, aes(x = Date)) + 
+  geom_bar(aes(y = sqrt(Res)), stat = 'identity', color="black") + 
+  geom_bar(aes(y = sqrt(Con.Var)), stat = 'identity', fill="blue", alpha = 0.8)
+```
+
+Like usual, we really don't have to code every step when using R. Library "tseries" has ready function that calculates ARCH estimates with one line of code.
+
+```{r}
+summary(garch(ponsse$Return, order = c(0, 1)))
+```
+
+# GARCH
+
+There are plethora of different variations of ARCH models. Maybe most well know of them is the GARCH model, standing for generalized autoregressive conditional heteroskedasticity model. GARCH model differs from ARCH model in way that instead of just considering last erroc $\epsilon_{t-1}$ it also counts for last conditional variance $\sigma_{t-1}$. As we stated in previous part conditional variace is sum of unconditional variance and $\alpha$ times $\epsilon_{t-1}$. Many times high volatility continues for some time. This is what GARH model tries to model. In GARCH model conditional variance is given by:
+
+\begin{center}
+$\sigma_t^2=\alpha_0+\alpha_1\epsilon_{t-1}^2+\beta\sigma_{t-1}^2$
+\end{center}
+
+```{r}
+GARCH <- garch(ponsse$Return, order = c(1, 1))
+
+ponsse[, GCond.Sd := GARCH$fitted.values[, 1]]
+
+summary(GARCH)
+ggplot(ponsse, aes(x = Date)) +  geom_bar(aes(y = sqrt(Res)), stat = 'identity', color="black") + geom_bar(aes(y = GCond.Sd), stat = 'identity', fill = "blue", alpha = 0.8)
+```
+
