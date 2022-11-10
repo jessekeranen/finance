@@ -1,0 +1,190 @@
+---
+title: "Support Vector Machines"
+author: "Jesse Keränen"
+date: "6/6/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
+```
+
+Load data:
+
+three kind of charasteristics:
+betas,
+firm charasteristics,
+trading
+
+Some variables might be in Pounds
+```{r}
+library(data.table)
+library(readxl)
+library(ggplot2)
+library(lubridate)
+library(zoo)
+library(quantmod)
+
+
+load("/Users/jessekeranen/seminar/data/2022_GBR_DS_monthly.RData")
+load("/Users/jessekeranen/seminar/data/2022_GBR_DS_static.RData")
+load("/Users/jessekeranen/seminar/data/2022_GBR_WS_yearly.RData")
+dt <- copy(DS.monthly)
+
+# Source: https://data.oecd.org/price/inflation-cpi.htm
+inflation <- fread("extdata/inflation.csv")
+inflation <- inflation[LOCATION == "GBR", .(Date = TIME, INF = Value)]
+inflation[, Date := as.yearmon(Date)]
+inflation[, Date := as.Date(Date)]
+inflation[, Date := lubridate::rollforward(Date)]
+
+# Source: https://fred.stlouisfed.org/series/LIOR3MUKM
+interesrate <- fread("extdata/LIOR3MUKM.csv")
+colnames(interesrate) <- c("Date", "LIOR")
+interesrate[, Date := lubridate::rollback(as.Date(Date))]
+
+#Source: https://fred.stlouisfed.org/series/TEDRATE
+spread <- fread("extdata/TEDRATE.csv")
+colnames(spread)[1] <- "Date"
+spread[, Date := as.Date(Date)]
+spread[, Date := lubridate::rollback(Date)]
+
+US_rf <- fread("F-F_Research_Data_Factors.CSV")
+US_rf[, Date := ymd(parse_date_time(V1, "%Y%m"))]
+US_rf[, Date := lubridate::rollback(Date)]
+US_rf <- US_rf[, .(Date, RF)]
+
+dt[, LMV.USD := shift(MV.USD, 1, type = "lag"), by = Id]
+marketreturn <- dt[!is.na(RET.USD) & !is.na(LMV.USD), .(Return_Mkt = weighted.mean(RET.USD, LMV.USD)), by = "Date"]
+marketreturn <- merge(marketreturn, US_rf[, .(Date, RF)], by = "Date", all.x = T)
+marketreturn[, RMRF := Return_Mkt - RF]
+```
+
+```{r}
+ggplot(inflation, aes(Date, INF)) + geom_line()
+ggplot(interesrate, aes(Date, LIOR)) + geom_line()
+ggplot(spread, aes(Date, TEDRATE)) + geom_line()
+ggplot(marketreturn, aes(Date, cumprod(RMRF/100 + 1))) + geom_line()
+```
+
+```{r}
+help <- merge(dt[, .(Date, Id, RET.USD, RI.USD, MV.USD)], inflation, by = "Date")
+help <- merge(help, interesrate, by = "Date")
+help <- merge(help, spread, by = "Date")
+help <- merge(help, marketreturn[, .(Date, RMRF)], by = "Date")
+```
+
+Betas
+```{r}
+setorder(dt, Date)
+
+dates <- unique(help$Date)[c(36:length(unique(help$Date)))]
+
+# still needs to be tested
+calculate_beta <- function(dt, date, variable){
+  d <- dt[Date < date & Date > date %m-% months(60),
+          if(length(RET.USD) > 24){
+            cov(RET.USD, get(variable))/var(get(variable))
+            }
+          else {NA_real_},
+          by = Id]
+  d[, Date := as.Date(date)]
+  return(d)
+}
+inf <- rbindlist(lapply(dates, function(t){calculate_beta(help, t, "INF")}))
+colnames(inf)[2] <- "INF.BETA"
+int <- rbindlist(lapply(dates, function(t){calculate_beta(help, t, "LIOR")}))
+colnames(int)[2] <- "INTR.BETA"
+ted <- rbindlist(lapply(dates, function(t){calculate_beta(help, t, "TEDRATE")}))
+colnames(ted)[2] <- "TED.BETA"
+mrkt <- rbindlist(lapply(dates, function(t){calculate_beta(help, t, "RMRF")}))
+colnames(mrkt)[2] <- "RMRF.BETA"
+
+help <- merge(help, inf, by = c("Date", "Id"))
+help <- merge(help, int, by = c("Date", "Id"))
+help <- merge(help, ted, by = c("Date", "Id"))
+help <- merge(help, mrkt, by = c("Date", "Id"))
+# save(help, file = "extdata/data1.Rdata")
+# load("extdata/data1.Rdata")
+```
+
+Trading measures
+```{r}
+help <- na.omit(help)
+
+help <- help[, count := .N, by=Id][(count >= 35)]
+
+help[, RSI :=  RSI(RI.USD, n=14), by = Id]
+help[, MACD := MACD(RI.USD, nFast = 12, nSlow = 26, nSig = 9)[, "macd"], by = Id]
+help[, SignalMACD := MACD(RI.USD, nFast = 12, nSlow = 26, nSig = 9)[, "signal"], by = Id]
+```
+
+Firm charasteristics
+```{r}
+help[, month := month(Date)]
+help[, year := year(Date)]
+help[, hcol := ifelse(month >= 7, year-1, year-2)]
+
+help <- merge(help, WS.yearly[, .(Id, Year, WC05476, WC05001, WC01001, WC01051, 
+                              WC01251, WC01101, WC05301, WC02999, WC03480, 
+                              WC03451, WC03255, WC03251, WC01151, WC03051, 
+                              WC03063, WC02201, WC02001, WC01551, WC03101,
+                              WC03151, WC04551)], by.y = c("Id", "Year"),
+            by.x = c("Id", "hcol"), all.x = T)
+
+help[, WC01151 := ifelse(is.na(WC01151), 0, WC01151)]
+help[, WC03051 := ifelse(is.na(WC03051), 0, WC03051)]
+help[, WC03063 := ifelse(is.na(WC03063), 0, WC03063)]
+
+
+# Operating working capital, needed for accruals
+help[, OWC := WC02201 - WC02001 - WC03101 + WC03051 + WC03063]
+
+help2 <- help[month == 7, .(hcol = hcol, Id = Id, LWC02999 = WC02999, 
+                          LWC03151 = WC03151, LWC01151 = WC01151, LOWC = OWC)]
+help2[, hcol := hcol+1]
+help <- merge(help, help2, by = c("Id", "hcol"), all.x = T)
+
+# Book to market value
+help[, BM := (WC05476/WC05001)]
+# Total book value = book value per share * shares outstanding
+help[, BE := WC05476*WC05301]
+# Operating profitability
+help[, OP := WC01551/BE]
+# Investment variable
+help[, INV := (WC02999 - LWC02999)/LWC02999]
+# Total financing volume
+help[, FIN:=WC03480+WC03451-WC04551+WC03255] # Common Equity + Preferred Equity - Cash Dividend + Total Debt
+# XFIN: yearly change in FIN scaled by average of total assets
+help[, XFIN := ifelse(WC02999 >= (WC03480 + WC03451 - WC04551 + WC03255),
+                    (FIN-shift(FIN, 12, type = "lag")) /((WC02999 + shift(WC02999, 12, type = "lag"))/2), NA), by = Id]
+# Lagged market value
+help[, LMV.USD := shift(MV.USD, 1, type = "lag"), by = Id]
+# Sales/Price
+help[, SALES := WC01001/(LMV.USD*1000), by = Id]
+# Debt/Price
+help[, DEBT := WC03255/(LMV.USD*1000), by = Id]
+# Accruals
+help[, ACC := ((OWC - WC01151)/(LOWC - LWC01151)) - 1]
+# Momentum
+help[,Mom_Season := (shift(RET.USD, 12, type = "lag") + shift(RET.USD, 24,type = "lag") +
+     shift(RET.USD, 36, type = "lag"))/3, by = Id]
+
+# Order data.table by Date and decreasing by market value. Makes size allocation easier
+setorder(help, Date, -LMV.USD)
+
+# Momentum variable
+help[, MOM := shift(RI.USD, 2, type = "lag")/shift(RI.USD, 12, type = "lag") - 1,
+   by = Id]
+```
+
+
+```{r}
+dt2 <- help[, .(Id, Date, RET.USD, BM, OP, INV, XFIN, MV.USD, LMV.USD, SALES, DEBT, ACC, Mom_Season, MOM, RSI, MACD, SignalMACD, INF.BETA, INTR.BETA, TED.BETA, RMRF.BETA)]
+dt2 <- na.omit(dt2)
+dt2[, FRET.USD := shift(RET.USD, -1), by = Id]
+
+summary(lm(data = dt2[Date == "2015-10-31"], FRET.USD ~ BM + OP + INV + XFIN + MV.USD + LMV.USD + SALES + DEBT + ACC + Mom_Season + MOM + RSI + MACD + SignalMACD + INF.BETA + INTR.BETA + TED.BETA + RMRF.BETA))
+```
+

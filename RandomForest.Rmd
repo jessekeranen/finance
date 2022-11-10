@@ -81,7 +81,7 @@ On Balance Volume is a cumulative trading pressure measure. OBV can remain same 
 $OBV_t = OBV_{t-1}+\left\{\begin{array}{l l}volume, \quad \ if \ Price_t > Price_{t-1}\\ 0, \qquad \quad \quad if \ Price_t = Price_{t-1} \\ -volume, \ \ if \ Price_t < Price_{t-1}\end{array}\right.$
 \end{center}
 
-Idea of the On Balance Volume is that volume proceeds price. I think OBV as pressure for stock price. When volumes are high and prices increase there is still pressure for assets price to increase. Again when volumes and prices are decreasing prices are more likely to still decrease.
+Idea of the On Balance Volume is that volume proceeds price. I think OBV as a pressure for stock price. When volumes are high and prices increase there is still pressure for assets price to increase. Again when volumes and prices are decreasing prices are more likely to still decrease.
 
 ```{r}
 price[, OBV := 0]

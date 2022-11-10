@@ -160,3 +160,7 @@ summary(GARCH)
 ggplot(ponsse, aes(x = Date)) +  geom_bar(aes(y = sqrt(Res)), stat = 'identity', color="black") + geom_bar(aes(y = GCond.Sd), stat = 'identity', fill = "blue", alpha = 0.8)
 ```
 
+# Epilogue
+
+We can see that especially with high frequency data GARCH model does pretty good job forecasting volatility. Of course we can not be sure how well model would perform with out of sample data, but many papers have shown that usually GARCH models do at least decent job in forecasting volatilities. One can build quite sophisticated stock trading strategies using GARCH model with some other methods that for example predict direction of stock return. One could also volatility predictions from GARCH in portfolio optimization and possibly get more precise results.
+

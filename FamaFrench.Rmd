@@ -1,256 +1,306 @@
 ---
-title: "Fama-French model"
+title: "Seminar Paper"
 author: "Jesse Keränen"
-date: "11/23/2021"
+date: "5/7/2022"
 output: pdf_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+knitr::opts_chunk$set(echo = TRUE)
 rm(list = ls())
 ```
 
-# Prologue
-
-This file attempts to form portfolios and factors in the spirit of Eugene Fama and Kenneth French (1993). I did my bachelors thesis about Fama's and French's factor model, but then I worked my data completely in Excel. After that I programmed a java program that forms these file and has also GUI. That time I focused on using things I had learned in programming courses. This time I try to maintain more of a data science state of mind and make the code more efficient. Nevertheless lack of access to suitable databases poses some problems and code needs further testing before further usage. Because I can't access better data I will use excel files from my bachelor thesis as data source.
-
-## Loading data
-
-Let's start with loading data.
-```{r, message=FALSE, results='asis'}
-library(readxl)
-library(pdfetch)
-library(magrittr)
+Load data and libraries and some constants
+```{r}
 library(data.table)
-library(tidyr)
 library(zoo)
 library(ggplot2)
+library(tidyr)
+library(readxl)
+library(tidyverse)
+library(lubridate)
+library(xtable)
+
+
+load("/Users/jessekeranen/seminar/data/2022_GBR_DS_monthly.RData")
+load("/Users/jessekeranen/seminar/data/2022_GBR_DS_static.RData")
+load("/Users/jessekeranen/seminar/data/2022_GBR_WS_yearly.RData")
+
+# Load data from Keneth French Website
+temp <- tempfile()
+base <- "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/"
+factor <-"F-F_Research_Data_Factors"
+format<- "_CSV.zip"
+ff_url <- paste(base,factor,format,sep ="")
+download.file(ff_url, temp)
+
+FF_3_Factors_dt <- as.data.table(read_csv(unzip(temp),skip = 3) %>% 
+rename(Date = ...1) %>%
+  mutate_at(vars(-Date), as.numeric) %>%
+  mutate(Date = ymd(parse_date_time(Date, "%Y%m")))) %>% 
+  mutate(Date = lubridate::rollback(Date))
+ 
+colnames(FF_3_Factors_dt) <- gsub("-", "_", colnames(FF_3_Factors_dt))
+
+date_for_plot <- as.yearmon("Jul 2015")
+```
+
+```{r}
+# Copy original data to a variable so that we don't need to change original data
+dt <- copy(DS.monthly[, .(Id, ym, Date, RET.USD, MV.USD, RI.USD)])
+dt[, month := month(Date)]
+dt[, year := year(Date)]
+dt[, hcol := ifelse(month >= 7, year-1, year-2)]
+# Lagged market value
+dt[, LMV.USD := shift(MV.USD, 1, type = "lag"), by = Id]
+
+# Winsorize function, winsorizes given variables to 1st and 99th percentile
+winsorize_border <- 0.01
+winsorize <- function(dt, x, percentile){
+  dt[, (x) := ifelse(get(x) > quantile(get(x), 1-percentile, na.rm=T), 
+                     quantile(get(x), 1-percentile, na.rm=T), get(x)), by=Date]
+  dt[, (x) := ifelse(get(x) < quantile(get(x), percentile, na.rm=T),
+                     quantile(get(x), percentile, na.rm=T), get(x)), by=Date]
+}
+winsorize(dt, "RET.USD", winsorize_border)
+
+
+# Merge yearly data to monthly data
+dt <- merge(dt, WS.yearly[, .(Id, Year, WC05476, WC05001, WC01001, WC01051, 
+                              WC01251, WC01101, WC05301, WC02999, WC03480, 
+                              WC03451, WC03255, WC03251, WC01151, WC03051, 
+                              WC03063, WC02201, WC02001, WC01551, WC03101,
+                              WC03151, WC04551)], by.y = c("Id", "Year"),
+            by.x = c("Id", "hcol"), all.x = T)
+
+# For some variables we want to calculate yearly change. With help of this merge we get one year lagged values for these variables to same row as current
+help2 <- dt[month == 7, .(hcol = hcol, Id = Id, LWC02999 = WC02999, 
+                          LWC03151 = WC03151, LWC01151 = WC01151)]
+help2[, hcol := hcol+1]
+dt <- merge(dt, help2, by = c("Id", "hcol"), all.x = T)
+
+# Book to market value
+dt[, BM := (WC05476/WC05001)]
+# Total book value = book value per share * shares outstanding
+dt[, BE := WC05476*WC05301]
+# Operating profitability
+dt[, OP := WC01551/BE]
+# Investment variable
+dt[, INV := (WC02999 - LWC02999)/LWC02999]
+
+# Order data.table by Date and decreasing by market value. Makes size allocation easier
+setorder(dt, Date, -LMV.USD)
+
+# Momentum variable
+dt[, MOM := shift(RI.USD, 2, type = "lag")/shift(RI.USD, 12, type = "lag") - 1,
+   by = Id]
+
+
+size_breaks <- function(dt, quantiles, labels, name) {
+  setorder(dt, Date, -LMV.USD)
+  dt[, hcjun := ifelse(month >= 7, year, year-1)]
+  
+  temp <- dt[month==7 & !is.na(LMV.USD)]
+  temp[, agg_weight := cumsum(LMV.USD)/sum(LMV.USD), by = year]
+  temp[, tempr := cut(agg_weight, breaks = quantiles, labels = labels), Id]
+  temp <- temp[, .(year, Id, tempr, agg_weight)]
+  
+  setnames(temp, "tempr", name)
+  dt <- merge(dt, temp, by.x = c("Id", "hcjun"), by.y = c("Id", "year"), all.x = T)
+}
+dt <- size_breaks(dt, c(0, 0.9, 1), c("Big", "Small"), "pf.size")
+panel_country <- copy(dt)
+
+
+# Quantiles used in portfolio allocations
+quantiles <- c(0, 0.3, 0.7, 1)
+
+# Labels for momentum portfolios
+labels <- c("Loser", "Neutral_mom", "Winner")
+# We don't use factors function for momentum allocation because it differs a bit from other factors. Momentum allocation is done monthly where as other factors are constructed yearly basis.
+panel_country[year > 1990, pf.mom := cut(MOM, breaks = quantile(.SD[pf.size == "Big", MOM], quantiles, 
+                                                      na.rm = T), labels = labels, na.rm = T), by = Date]
+
+
+# Function for allocating stocks to portfolios based on given variable
+factor <- function(dt, variable, name, labels) {
+  hlpvariable2 <- dt[month==7 & year > 1985, .(temp = cut(.SD[, get(variable)], breaks = 
+                  quantile(.SD[pf.size =="Big", get(variable)], quantiles, na.rm = T), labels = 
+                  labels), Id), by = year]
+  
+  setnames(hlpvariable2, "temp", name)
+  # Merge the variable allocation back from July Y to June Y+1
+  dt <- merge(dt, hlpvariable2, by.x=c("hcjun", "Id"), by.y=c("year", "Id"), all.x=T)
+  
+  return(dt)
+}
+panel_country <- factor(panel_country, "BM", "pf.bm", c("Low", "Neutral", "High"))
+panel_country <- factor(panel_country, "OP", "pf.op", c("Weak", "Neutral_op", "Robust"))
+panel_country <- factor(panel_country, "INV", "pf.inv", c("Conservative", "Neutral_inv", "Agressive"))
+
+# Form the 2x3 portfolios combining size with one additional variable
+panel_country[, Portfolio := paste0(pf.size,".",pf.bm)]
+panel_country[, Portfolio2 := paste0(pf.size,".",pf.op)]
+panel_country[, Portfolio3 := paste0(pf.size,".",pf.inv)]
+panel_country[, Portfolio4 := paste0(pf.size,".",pf.mom)]
+
+
+# Function for calculating portfolio returns
+portfolioreturns <- function(dt, portfolio){
+  portfolio_returns <- dt[, .(RET.USD = weighted.mean(RET.USD, LMV.USD, na.rm = T)),
+                          by = c("Date", portfolio)]
+  return(dcast(portfolio_returns, paste("... ~ ", portfolio)))
+}
+portfolio_returns1 <- portfolioreturns(panel_country, "Portfolio")
+portfolio_returns2 <- portfolioreturns(panel_country, "Portfolio2")
+portfolio_returns3 <- portfolioreturns(panel_country, "Portfolio3")
+
+
+# For momentum we use equal weights
+portfolio_returns4 <- panel_country[, .(RET.USD = mean(RET.USD, na.rm = T)),
+                                    by = c("Date", "Portfolio4")]
+portfolio_returns4 <- dcast(portfolio_returns4, ... ~ Portfolio4)
+
+
+# Merge all portfolios to one
+portfolio_returns <- merge(portfolio_returns1, portfolio_returns2, by = "Date")
+portfolio_returns <- merge(portfolio_returns, portfolio_returns3, by = "Date")
+portfolio_returns <- merge(portfolio_returns, portfolio_returns4, by = "Date")
+
+portfolio_returns[is.na(portfolio_returns)] <- 0
+
+# Market risk factor
+market_return_dt <- dt[!is.na(RET.USD) & !is.na(LMV.USD), .(Return_Mkt = weighted.mean(RET.USD, LMV.USD)), by = "Date"]
+market_return_dt <- merge(market_return_dt, FF_3_Factors_dt[, .(Date, RF)], by = "Date", all.x = T)
+market_return_dt[, RMRF := Return_Mkt - RF]
+RMRF_factor <- market_return_dt[, .(Date, RMRF = Return_Mkt-RF)]
+
+# Calculate factors from portfolios
+factors <- portfolio_returns[, .(Date, 
+          SMBbm = (Small.High + Small.Neutral + Small.Low)/3 - (Big.High + Big.Neutral + Big.Low)/3,
+          SMBop = (Small.Robust + Small.Neutral_op + Small.Weak)/3 - (Big.Robust + Big.Neutral_op +
+                                                                        Big.Weak)/3,
+          SMBinv = (Small.Conservative + Small.Neutral_inv + Small.Agressive)/3 - (Big.Conservative +
+                                                                    Big.Neutral_inv + Big.Agressive)/3,
+          SMBmom = (Small.Winner + Small.Neutral_mom + Small.Loser)/3 - (Big.Winner +
+                                                                    Big.Neutral_mom + Big.Loser)/3,
+          HML = (Small.High + Big.High)/2 - (Small.Low + Big.Low)/2,
+          RMW = (Small.Robust + Big.Robust)/2 - (Small.Weak + Big.Weak)/2,
+          CMA = (Small.Conservative + Big.Conservative)/2 - (Small.Agressive + Big.Agressive)/2,
+          MOM = (Small.Winner + Big.Winner)/2 - (Small.Loser + Big.Loser)/2)
+          ]
+
+factors[, SMB := (SMBbm + SMBop + SMBinv + SMBmom)/4]
+
+# Remove unnecessary columns
+factors[, SMBop := NULL]
+factors[, SMBbm := NULL]
+factors[, SMBinv := NULL]
+factors[, SMBmom := NULL]
+
+# Merge market factor with other factors
+factors_wide <- merge(factors, RMRF_factor, by="Date")
+
+# Melt for plotting
+factors <- melt(factors_wide, id.vars = "Date", variable.name = "factor", value.name = "RET.USD")
+
+# Check the factor statistics
+factors[factor == "SMB",t.test(RET.USD)]
+factors[factor == "HML",t.test(RET.USD)]
+factors[factor == "RMW",t.test(RET.USD)]
+factors[factor == "CMA",t.test(RET.USD)]
+factors[factor == "MOM",t.test(RET.USD)]
+factors[factor == "RMRF",t.test(RET.USD)]
+
+# Just for plotting
+factors2 <- factors[Date >= "1990-07-31", .(Date, cum_prod = cumprod(RET.USD/100 + 1)), by = factor]
+ggplot(factors2, aes(Date, cum_prod)) + geom_line(aes(color = factor)) +
+  labs(y = "Cumulative return", title = "") + scale_y_log10()
+```
+
+
+Size allocation:
+```{r}
+dt2 <- dt[, .(Id, ym, Date, RET.USD, MV.USD, month, year, LMV.USD, BM, OP, INV, MOM, pf.size)]
+
+quantiles <- c(0, 0.75, 0.90, 0.96, 0.99, 1)
+dt2 <- size_breaks(dt2, quantiles, c(5, 4, 3, 2, 1), "portf.size")
+
+# Plot to see if our allocation seems reasonable
+options(scipen = 999)
+
+# Cumulutave distribution of the market values in 2015 allocation
+ggplot(dt2[ym == date_for_plot], aes(LMV.USD, agg_weight)) + geom_line() + scale_x_log10()
+# Market values of stocks in different portfolios don't seem to overlap
+ggplot(dt2[ym == date_for_plot], aes(as.factor(portf.size), LMV.USD)) + geom_boxplot() + scale_y_continuous(trans='log10')
+```
+
+Allocation based no Book to Market-ratio. I tried to look at WC05001 to see if it consistent with stock prices from internet for some stocks. For me it seems like these values are somehow scaled.
+```{r}
+quantiles <- seq(0, 1, by = 1/5)
+dt2 <- factor(dt2, "BM", "portf.bm", c(1, 2, 3, 4, 5)) 
+
+ggplot(dt2[ym == date_for_plot], aes(as.factor(portf.bm), BM)) + geom_boxplot() + scale_y_log10()
+```
+
+By combining Size and Be/Me allocations, each stock will be allocated one of the 25 portfolios.
+```{r}
+dt2[, portfolio := paste(as.character(portf.size), as.character(portf.bm), sep = " ")]
+
+# Remove observation that weren't allocted to a portfolio
+dt2 <- dt2[!grepl("NA", portfolio)]
+
+# Let's see if there is reasonable amount of stocks in each portfolio each year. Now we can't expect there to be equal amount of stocks in each portfolio if size and value correlate. Also we didn't use equal breakpoints for size.
+tail(table(dt2[year(ym) == 2015, portfolio, by = ym]))
+```
+
+Portfolio returns
+```{r}
+portfolios <- portfolioreturns(dt2, "portfolio")
+
+# Because unbalanced portfolio construction there for some months there can be zero stocks in some portfolio
+portfolios[is.na(portfolios)] <- 0
+
+
+#For plotting
+portfolios2 <- portfolios[year(Date) > 1990]
+
+portfolios2 <- melt(portfolios2, id.vars = "Date", variable.name = "Portfolio",
+     value.name = "Return")
+portfolios2[, RET.CUM := cumprod(Return/100 + 1), by = Portfolio]
+portfolios2 <- merge(portfolios2, market_return_dt[, .(Date, RF)], by = "Date")
+portfolios2[, EXCESS.RET := Return - RF]
+
+ggplot(portfolios2[year(Date) > 1990], aes(Date, RET.CUM, color = Portfolio)) + geom_line() + scale_y_log10()
+```
+
+Data seems weird. For example company id 882323, from 2011-12-31 to 2012-10-31.
+
+```{r, results='asis'}
+p <- portfolios2[, mean(Return), by = Portfolio]
+separate(p, "Portfolio", into = c("Size", "Value"), sep = " ") %>% spread(Value, V1)
+```
+
+```{r, results='asis'}
 library(stargazer)
 
-data <- read_excel("extdata/famafrench2.xlsx")
-data_dt <- as.data.table(data)
+portfolio_names <- portfolios2[, unique(Portfolio)]
+# One can try different models by choosing different subset of factors here
+fac <- as.matrix(factors_wide[year(Date) > 1990, -1])
 
+list <- vector("list", length(portfolio_names))
 
-# Tidying data
-data_dt <- melt(data_dt,id.vars = "Dates", variable.name =
-          "Variable", value.name = "Price")
-
-# Set Price values as numeric
-data_dt <- data_dt[, Price := as.numeric(Price)]
-
-data_dt <- data_dt[, Company := as.character(Variable)]
-data_dt <- separate(data_dt, col = Company, into = c("Company", "right"), 
-                    sep = "_")
-# Remove unnecessary column
-data_dt <- data_dt[, Variable := NULL]
-
-
-data_dt <- data_dt[, Dates := as.Date(Dates)]
-
-# Take a look at this. For some reason Kemira and Pihlajalinna had
-# duplicates which needed to be removed.
-data_dt <- data_dt[!duplicated(data_dt), ]
-
-data_dt <- dcast(data_dt, Dates + Company~right, value.var = "Price")
-colnames(data_dt) <- c("Date", "Company", "ME", "MEBE", "Price")
-stargazer(tail(data_dt), type = 'latex', header = F, 
-          summary = F)
-```
-
-## Calculate break points
-
-Now that we have our data in nice format, we can start calculating breakpoints form our data. We then use these breakpoints in portfolio constructing. Usually in literature stocks are divided in more portfolios, but since our data is rather small we only calculate two breakpoints for both market value and ME/BE value. In the spirit of Fama and French (1993) we should calculate market value breakpoints using information from June and BE/ME breakpoints using values December. Now I nevertheless have so little data so I am going to use data from March for ME/BE and data from end of June for ME.
-```{r, results='asis'}
-q <- c(0.33, 0.66)
-# Variable is called December, because usually we would use data from 
-# december
-first_december <- data_dt[month(Date) == 3, min(Date)]
-
-decembers <- seq(first_december, max(data_dt$Date), by="years")
-
-first_july <- data_dt[month(Date) == 6, min(Date)]
-julys <- seq(first_july, max(data_dt$Date), by = "years")
-
-stargazer(data.table(Decembers = decembers, Julys =julys), 
-          type = 'latex', header = F, summary = F)
-
-# in this data there is one March more than Julys
-MEBE_breakpoints = matrix(nrow = length(decembers)-1, ncol = length(q))
-ME_breakpoints = matrix(nrow = length(julys), ncol = length(q))
-for(i in 1:length(julys)){
-  MEBE_breakpoints[i,] <- data_dt[Date == decembers[i], 
-                        quantile(MEBE, q, na.rm = T)]
-  ME_breakpoints[i,] <- data_dt[Date == julys[i],
-                      quantile(ME, q, na.rm =T)]
-}
-```
-
-## Construct portfolios
-
-We now know the breakpoints so we can start to assign stocks to portfolios.Stock is assigned to a "small" portfolio if it's market value is smaller than first ME break point. If stocks market value is smaller than second break point it is allocated to "medium" portfolio. Otherwise stock goes to "big" portfolio. Each stock is also allocated to a portfolio based on it's ME/BE value. This way we become with 9 size/value portfolios. It's worth mentioning that in my data I have ME/BE values for each stock, whereas in literary BE/ME values are usually used. This shouldn't nevertheless change our results much since these two values are just other way around. Though it changes interpretation of value. Now low ME/BE value indicates value stock and high ME/BE value growth stock.
-```{r}
-# Order data.table by Company
-data_dt <- setorder(data_dt, "Company")
-
-# At the beginning I set every stock to portfolio 3.
-data_dt <- data_dt[!is.na(ME) & month(Date) == 7, 
-          ME_Portfolio := 3]
-
-# I don't like using for loops in R, since there is usually a better way. 
-# This time I couldn't come up with way doing this without a loop though.
-for (j in 1:nrow(ME_breakpoints)){
-  for (i in ncol(ME_breakpoints):1){
-    data_dt <- data_dt[ME < ME_breakpoints[j, i] & 
-              month(Date) == 7 & year(Date) == year(first_july)
-              -1 + j, ME_Portfolio := i, by=year(Date)]
-  }
+for (i in 1:length(portfolio_names)){
+  list[[i]] <- lm (portfolios2[Portfolio == portfolio_names[i], EXCESS.RET] ~ fac)
 }
 
-# Now set portfolio value also for other months than July.
-# Check that this doesn't mess other variables
-data_dt <- data_dt[, lapply(.SD, function(x) na.locf(x, na.rm=F)), by=Company]
+stargazer(list[1:8], type='latex', header=FALSE, no.space = TRUE,
+           column.sep.width = "1pt", font.size = "tiny")
 
-apu <- data_dt[month(Date) == 7]
-ggplot(na.omit(apu), aes(as.factor(ME_Portfolio), log(ME))) +
-  geom_boxplot() + facet_grid(~year(Date))
-```
+stargazer(list[9:16], type='latex', header=FALSE, no.space = TRUE,
+           column.sep.width = "1pt", font.size = "tiny")
 
-It seems like our allocation worked, since market values of stocks in different portfolio don't overlap. In nested for loop I set portfolio value for each stock for each year to July. After the loops I copied this value to other months also. This will help us when we start to calculate portfolio returns. Stock was allocated to one portfolio only if it had market value available. Now we do identical thing with the ME/BE values.
-```{r}
-data_dt <- data_dt[!is.na(MEBE) & month(Date) == 7, MEBE_Portfolio := 3]
-
-# I don't like using for loops in R, since there is usually a better way. 
-# This time I couldn't come up with way doing this without a loop though.
-for (j in 1:nrow(MEBE_breakpoints)){
-  for (i in ncol(MEBE_breakpoints):1){
-    data_dt <- data_dt[MEBE < MEBE_breakpoints[j, i] &
-    month(Date) == 7 & year(Date) == year(first_july) -1 + j,
-    MEBE_Portfolio := i, by=year(Date)]
-  }
-}
-
-# Now set portfolio value also for other months than July.
-data_dt <- data_dt[, lapply(.SD, function(x) na.locf(x, na.rm=F)), by=Company]
-
-apu <- data_dt[month(Date) == 7]
-ggplot(na.omit(apu), aes(as.factor(MEBE_Portfolio), log(MEBE))) +
-  geom_boxplot() + facet_grid(~year(Date))
-```
-
-We can see that our data has some big outliers. I think that these are mistakes in data and they need to be removed from data. Negative ME/BE value means that book value of the company is negative, this can of course be possible. This means that company's liabilities exceed its assets. But for example Fama and French (1993) clean all stocks with negative BE/ME value from their data. I only remove stocks with unrealistically low ME/BE value, by setting their portfolio value to NA.
-```{r}
-data_dt[MEBE < -2, MEBE_Portfolio := NA]
-```
-
-It would might be good idea to clean data even more, but since I have only limited amount of data I don't want to be too strict. Now we can combine values from both portfolio allocations to one column. We need to remember first number tells about size and second about value.
-```{r}
-data_dt <- unite(data_dt, col = Portfolio, ME_Portfolio,
-          MEBE_Portfolio, sep = " ")
-# Remove portfolios with insufficient information
-data_dt[grep("NA", Portfolio), Portfolio := NA]
-
-# Plot how stocks and portfolios are distributed along the size-value 
-# horizon.
-p <- data_dt[Date == "2019-07-31"]
-ggplot(na.omit(p), aes(log(ME), log(MEBE), color=Portfolio)) +
-  geom_point()
-```
-
-We can see from above graph that problem with little set of data is that number of stock allocated to each portfolio is rather small. We can see that for example in 2019 portfolio "1 3" had only 6 stock. Less than 10 stocks might not be enough to diversify unsystematic risk. Insufficient diversification can affect our results. This is nevertheless just one year. Let's next take a look how many stocks are allocated to each portfolio on average.
-```{r, results='asis'}
-# It shouldn't affect greatly on number of stocks what day we use. Only
-# way number of stock within portfolio can change between allocations is
-# when some stock leaves the stock exchange
-ffp <- data_dt[month(Date) == 7]
-stock_num <- as.data.table(table(ffp$Portfolio, ffp$Date))
-colnames(stock_num) <- c("Portfolio", "Date", "Number")
-stargazer(head(stock_num), type = 'latex', header = F, 
-          summary = F)
-
-ggplot(stock_num[, round(mean(Number), 0), by = Portfolio],
-       aes(Portfolio, V1)) + geom_bar(stat="identity")
-
-ggplot(stock_num, aes(Portfolio, Number)) + geom_boxplot()
-```
-
-We have our stock allocated to nine portfolio for each year. Soon we can start calculating actual portfolio returns. We are going to calculate monthly weighted returns. Let's calculate value of each portfolio each month so we can easier calculate weighted returns. After we calculate weight of each asset in portfolio.
-```{r}
-for (i in 1:length(unique(data_dt$Date))){
-  data_dt[Date == Date[i], Portfolio_ME := sum(ME), 
-          by = Portfolio]
-}
-
-data_dt[, Weight := ME/Portfolio_ME]
-```
-
-## Calculate portfolio returns
-
-We have done already many things, but to be able to calculate portfolios returns we need to calculate also returns of individual stocks. Next we calculate simply monthly returns for each stock weight them by weight of the stock.
-```{r}
-data_dt[, Return := Price/shift(Price) -1, by = Company]
-data_dt[!is.na(Weight), Weighted_Return := as.numeric(Return)*
-          as.numeric(Weight)]
-```
-
-Now we finally have all the information we need to be able to calculate portfolio returns.
-```{r}
-portfolio_returns <- data.table(Portfolio = character(), V1 =
-                    numeric(), Date=as.Date(character()))
-
-for (i in 1:length(unique(data_dt$Date))){
-  apu <- data_dt[Date == Date[i] & !is.na(Portfolio),   
-         sum(Weighted_Return), by = Portfolio]
-  apu <- apu[, Date := data_dt$Date[i]]
-  portfolio_returns <- rbind(portfolio_returns, apu)
-}
-colnames(portfolio_returns) <- c("Portfolio", "Return", "Date")
-```
-
-After calculating the portfolio returns we can start the interesting part. Let's first look for a patterns in portfolio returns.
-```{r}
-portfolio_returns[, Cum_Return := cumprod(1+Return), by = Portfolio]
-
-ggplot(portfolio_returns, aes(Date, Cum_Return, color=Portfolio)) +
-  geom_line()
-```
-
-Most notably we see that portfolio "1 3" has performed best. As we previously saw this portfolio had small number of stocks in it. So high returns on one stock can drive performance of whole portfolio.
-
-## Load factors
-
-Only looking for patterns in returns, doesn't tell us too much. We might want to take a deeper look whether our factors affect returns of our portfolio. Until now we have constructed portfolios whose returns we want to explain. Next we need factors that might explain these returns. Fama and French (1993) use difference of returns of the large size portfolio and small size portfolios, as well as difference between high value portfolios and low value portfolios as these factors. Of course they also use excess market returns, which is familiar for us from capital asset model. We could quite easily calculate these differences, but since Finnish capital markets are quite integrated to European capital market it is interesting to regress our returns with European factors. These we can conveniently download from Kenneth French's data library.
-```{r}
-factors <- read_excel("extdata/factors.xlsx")
-factors_dt <- as.data.table(factors)
-```
-
-## Regression
-
-Now it's time for regressions. We run simply linear OLS regressions for each portfolio. Next I calculate excess portfolio returns by subtracting the risk free rate from returns and after that I start regressing. 
-```{r, results='asis'}
-portfolio_returns <- portfolio_returns[, RF :=
-                    Return-factors_dt[, RF], by = Portfolio]
-
-portfolios <- portfolio_returns[, unique(Portfolio)]
-portfolios
-# This makes our summary table little bit nicer looking.
-f <- as.matrix(factors_dt[,2:4])
-
-list <- vector("list", length(portfolios))
-for (i in 1:length(portfolios)){
-  list[[i]] <- lm (portfolio_returns[Portfolio == portfolios[i],
-               RF] ~ f)
-}
-stargazer (list, type='latex', header=FALSE, no.space = TRUE,
+stargazer(list[17:25], type='latex', header=FALSE, no.space = TRUE,
            column.sep.width = "1pt", font.size = "tiny")
 ```
 
-Running these regressions show us some interesting results. First of all our model explain better returns of portfolios constructed from stock with large market value. This was to be expected. In many studies stock with as small market value as stock within our smallest portfolios are removed from data set. One can argue that assumptions of efficient markets don't concern too small stocks.Secondly, surprisingly market factor is most statistically significant, whereas out other factors are rarely significant.
-
-# Epilogue
-
-It's is interesting how even if FF3 is quite straight forward extension of CAP-model, first bases heavily on empirical findings where as latter is more theoretic based. As one could guess in many papers factor model has turned out to explain especially portfolio returns significantly better than its ancestor. This isn't though case in our study. We shouldn't draw too much conclusions from results of this test. It would be interesting to test different combinations of factors or run necessity test for factors. Maybe the most biggest thing affecting reliability of our results is our data. First of all it too small and consists quite much NAs. NAs doesn't seem to be ranbom. They seem to more general within small stocks and stocks that have left the stock exchange. One solution could be looking data from various sources and maybe expanding data to concern all stocks from Nordic countries. One thing affecting our results is that our factors are in U.S. dollars where as our other data is in euros.
-
-# References:
-
-https://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.139.5892
