@@ -1,0 +1,235 @@
+---
+title: "Logistic Regression"
+author: "Jesse Keränen"
+date: "11/14/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+rm(list = ls())
+
+library(data.table)
+library(ggplot2)
+```
+
+# Prologue
+
+Purpose of this file is to help me understand basic idea of logistic regression. Sometimes, instead of just looking at the mathematical formulas, I like to try to understand new concepts using example data and applying new method to that. In this file I try to go through process of logistic regression using sample data. 
+
+## Data
+
+To make this more interesting I need somewhat reasonable data, but discovering something from the data is not goal of this document. First idea was to generate my own data set with real means and standard deviations of heights of males and females. I had to give up with that idea because with that data set my algorithm seemed to converge to optimal solution, but it took so long that my patience didn't last. Instead I chose example data set from logistic regressions Wikipedia page. Data set contains hours students have spent studying and whether they passed the exam or not.
+
+```{r}
+set.seed(1)
+
+hours_arr = c(0.50,	0.75,	1.00,	1.25,	1.50,	1.75,	1.75,	2.00,	2.25,	2.50,	2.75,
+              3.00,	3.25,	3.50,	4.00,	4.25,	4.50,	4.75,	5.00,	5.50)
+passed_arr <- c(0, 0,	0, 0,	0, 0,	1, 0,	1, 0,	1, 0,	1, 0,	1, 1,	1, 1,	1, 1)
+
+dt <- data.table(hours = hours_arr,  passed_bin = as.factor(passed_arr),
+                 passed = passed_arr)
+
+
+ggplot(dt, aes(hours, passed)) + 
+  geom_point(aes(color = passed_bin)) + geom_smooth(method = "lm", se = F)
+```
+
+We can see from the plot that passed and failed students clearly have different mean studying hours, but there are still overlapping observations. That is exactly what we wanted.
+
+## Probability , odds and logit
+
+As far as I have understood we can think of Y axis values in above plot as probability of passing given the time spent studying. If studied hours of a individual is high there is high possibility that he has passede. If studying hours of the observation is low there is high possibility that he has failed. That would then mean that there is low possibility of that individual has passed. We would like to fit a line to the our data as we do in OLS which would show us our estimate of for probability of a persons passing for all study times. Since our response variable is binary straight line wouldn't fit too well to our data. Instead we can see that line with kind of s-shape would be more suitable.
+
+To accomplish that we need to introduce couple of new measures. First one would be odds. Odds are rather simply to calculate. 
+\begin{center}
+
+$Odds = \frac{p(x)}{1-p(x)}$
+
+Odds are basically probability of an event divided by one - probability of an event. Odds can get values between zero and positive infinity, where as probabilities are bound by zero and one. For the next equation I didn't find a proof, but I guess it is so well know fact that I take it as given. Odds equal exponent of a linear function.
+
+\begin{center}
+
+$\frac{p(x)}{1-p(x)} = e^{\beta_0+\beta_1 X}$
+
+\end{center}
+
+Which indicates that logarithm of odds, called log-odds or logit, can be presented by linear function. Log-odds can vary from minus infinity to positive infinity.
+
+$ln(\frac{p(x)}{1-p(x)}) = \beta_0+\beta_1 X$
+
+\end{center}
+
+Now that we know formula for odds, we can easily derive function for probabilities.
+
+\begin{center}
+
+$p(x) = (1-p(x)e^{\beta_0+\beta_1 X}$
+
+$p(x) = e^{\beta_0+\beta_1 X} - p(x)e^{\beta_0+\beta_1 X}$
+
+$p(x) + p(x)e^{\beta_0+\beta_1 X} = e^{\beta_0+\beta_1 X}$
+
+$(1 + e^{\beta_0+\beta_1 X})p(x) = e^{\beta_0+\beta_1 X}$
+
+$p(x) = \frac{e^{\beta_0+\beta_1 X}}{1 + e^{\beta_0+\beta_1 X}}$
+
+\end{center}
+
+At this point I am not yet interested in how we can find the line that best presents the probabilities. In this case (because observations are ones zeros, which lead to infinite logo-dds) we have to use likelihood function and maximize that. Next I try to clarify likelihood function calculation with my initial guess for the line. My first guess is that $\beta_0$ equals $-85$ and $\beta_1$ equals $0.5$.
+
+```{r}
+a <- ggplot(dt) + geom_function(fun = function(x) -15 + 5*x) + xlim(min=0, max=5)
+ 
+b <- ggplot(dt, aes(hours, passed, color = passed_bin)) +
+  geom_point() + 
+  geom_function(fun = function(x) exp(-15 + 5*x)/(1 + exp(-15 + 5*x))) +
+  theme(legend.position = "none")
+
+cowplot::plot_grid(a, b)
+```
+
+First I have plotted different logit as function of hourss. We can see the linear relationship. Next probabilities are plotted as function of hours using formula derived above with out parameter values for betas. We can see that line fit data quite nicely.
+
+When we are looking for our optimal line, values that we are changing are betas. Since there is no closed form solution like for the OLS, we have to use numeric methods to find optimal one. This means that we need a objective function that tells us how good our current solution is compared to previous ones. We are going to use likelihood function. First we want to project our data to our current line. That way we can calculate logit and probit values.
+
+```{r}
+dt[, prob := exp(-15 + 5*hours)/(1+exp(-15 + 5*hours))]
+
+dt[, log_odd := log(prob/(1-prob))]
+
+c <- ggplot(dt, aes(hours, log_odd, color = passed_bin)) + 
+  geom_function(fun = function(x) -15 + 5*x) + geom_point() +
+  theme(legend.position = "none")
+
+d <- ggplot(dt, aes(hours, prob, color = passed_bin)) + 
+  geom_function(fun = function(x) exp(-15 + 5*x)/(1 + exp(-15 + 5*x))) +
+  geom_point() + theme(legend.position = "none")
+
+cowplot::plot_grid(c, d)
+```
+
+Using probit values we can easily calculate value for likelihood function.
+
+\begin{center}
+
+$likelihood = \prod_{i=1}p^{y_i}(1-p)^{1-y_i}$
+
+\end{center}
+
+Which is just product of all observations probit (or one minus probit for observations with dependent value of zero) values. We can see that since we want to maximize our objective function optimizer has incentive to set line so that observations with observed dependent value of one have high probit value and observations with observed dependent value of zero have low probit value. To obtain some characteristics that will make our optimization easier we are going to use logarithmic version of the likelihood function.
+
+\begin{center}
+
+$ln(likelihood) = \sum_{i=1}y_iln(p_i) + (1 - y_i)ln(1-p_i)$
+
+\end{center}
+
+```{r}
+dt[, l := prob^passed*(1 - prob)^(1 - passed)]
+dt[, ll := passed*log(prob) + (1 - passed)*log(1 - prob)]
+
+likelihood <- prod(dt$l)
+log_likelihood <- sum(dt$ll)
+log_likelihood
+```
+
+We can see that with our initial guess log likelihood function value would be $-11.23$. Let's see whether we can improve that.
+
+## Optimization
+
+Now that we know what we are actually calculating we can move to optimization. Our optimization algorithm goes as follows. First we calculate gradient of our objective function. In our case log likelihood function. Then we will move in direction of the gradient by step length $\alpha$, which we can also optimize. We repeat this process until the change in our objective function is small enough. We can decide this preciseness. After we have found this point we know that it is optimal since log likelihood function is convex function. This is called gradient ascent method. So, let's try to derive gradient of our log likelihood function.
+
+\begin{center}
+
+$\frac{\partial LL(\beta)}{\partial \beta_j} = \frac{\partial LL(\beta)}{\partial p} \cdot \frac{\partial p}{\partial z} \cdot \frac{\partial z}{\partial \beta_j}$
+
+$LL(\beta) = y \ ln(p) + (1 - y)ln(1 - p)$
+
+$\frac{\partial LL(\beta)}{\partial p} = y \cdot\frac{1}{p}-1\cdot(1-y)\cdot\frac{1}{1-p} = \frac{y}{p}-\frac{1-y}{1-p}$
+
+$p = \sigma(z)$ where $\sigma$ denotes exponential and $z$ denotes $X\beta$
+
+$\sigma(z) = \frac{e^{\beta_0 + \beta_1x}}{1+e^{\beta_0 + \beta_1x}}$
+
+$\frac{\partial p}{\partial z} = \frac{\partial \sigma(z)}{\partial z} = \frac{\partial}{\partial z} \cdot  \sigma(z) = \frac{\partial}{\partial z} \cdot \frac{e^{\beta_0 + \beta_1x}}{1+e^{\beta_0 + \beta_1x}}$
+
+$\frac{\partial p}{\partial z} = \frac{(1+e^{\beta_0 + \beta_1x}) \cdot e^{\beta_0 + \beta_1x} + e^{\beta_0 + \beta_1x}\cdot e^{\beta_0 + \beta_1x}}{(1+e^{\beta_0 + \beta_1x})^2} = \frac{(1+e^{\beta_0 + \beta_1x}) \cdot e^{\beta_0 + \beta_1x} + e^{(\beta_0 + \beta_1x) + (\beta_0 + \beta_1x)}}{(1+e^{\beta_0 + \beta_1x})^2} = \frac{(1+e^{\beta_0 + \beta_1x}) \cdot e^{\beta_0 + \beta_1x} + e^{2(\beta_0 + \beta_1x)}}{(1+e^{\beta_0 + \beta_1x})^2} = \frac{e^{\beta_0 + \beta_1x}}{1+e^{\beta_0 + \beta_1x}} - \frac{e^{2(\beta_0 + \beta_1x)}}{(1+e^{\beta_0 + \beta_1x})^2}$
+
+since
+
+$e^{2(\beta_0 + \beta_1x)}=e^{(\beta_0 + \beta_1x)^2}$
+
+we can write
+
+$\frac{e^{\beta_0 + \beta_1x}}{1+e^{\beta_0 + \beta_1x}} - (\frac{e^{\beta_0 + \beta_1x}}{1+e^{\beta_0 + \beta_1x}})^2$
+
+$\frac{e^{\beta_0 + \beta_1x}}{1+e^{\beta_0 + \beta_1x}} - \frac{e^{\beta_0 + \beta_1x}}{1+e^{\beta_0 + \beta_1x}} \cdot \frac{e^{\beta_0 + \beta_1x}}{1+e^{\beta_0 + \beta_1x}}$
+
+$(1 -  \frac{e^{\beta_0 + \beta_1x}}{1+e^{\beta_0 + \beta_1x}})\cdot \frac{e^{\beta_0 + \beta_1x}}{1+e^{\beta_0 + \beta_1x}}$
+
+finally
+
+$\frac{\partial z}{\partial \beta_j} = x_j$
+
+$\frac{\partial LL(\beta)}{\partial \beta_j} = (\frac{y}{p}-\frac{1-y}{1-p})\cdot (1 -  \frac{e^{\beta_0 + \beta_1x}}{1+e^{\beta_0 + \beta_1x}})\cdot \frac{e^{\beta_0 + \beta_1x}}{1+e^{\beta_0 + \beta_1x}})\cdot x_j$
+
+$\frac{\partial LL(\beta)}{\partial \beta_j} = (\frac{y}{p}-\frac{1-y}{1-p})\cdot (1 -  p)\cdot p\cdot x_j$
+
+$(\frac{y \cdot (1-p)p}{p}-\frac{(1-y)\cdot(1-p)p}{1-p})\cdot x_j$
+
+$(y(1-p)-(1-y)p)\cdot x_j$
+
+$(y-yp -p + yp)\cdot x_j = (y-p)\cdot x_j = (y - \frac{e^{\beta_0+\beta_1 X}}{1 + e^{\beta_0+\beta_1 X}})x_j$
+
+\end{center}
+
+```{r}
+X <- as.numeric(c(0.50,	0.75,	1.00,	1.25,	1.50,	1.75,	1.75,	2.00,	2.25,	2.50,	2.75,	3.00,	3.25,	3.50,	4.00,	4.25,	4.50,	4.75,	5.00,	5.50))
+X <- cbind(rep(1, length(X)), X)
+ 
+Y <- as.numeric(c(0,	0,	0,	0,	0,	0,	1,	0,	1,	0,	1,	0,	1,	0,	1,	1,	1,	1,	1,	1))
+
+
+beta <- runif(2)
+
+sigmoid <- function(X, Y, beta) {
+  temp <- (Y - 1/(1+exp(-(beta %*% t(X)))))  %*% X
+  
+  return(temp)
+}
+
+for (x in 1:1000) {
+  beta_1 <- beta
+  beta <- beta_1 + 0.01 * sigmoid(X, Y, beta_1)
+}
+
+c(beta)
+```
+
+
+
+```{r}
+ab <- glm(passed ~ hours, data=dt, family=binomial (link=logit))
+summary(ab)
+
+ggplot(dt, aes(hours, passed, color = passed_bin)) +
+  geom_point() + geom_function(fun = function(x) exp(ab$coefficients[1] + 
+  ab$coefficients[2]*x)/(1 + exp(ab$coefficients[1] + ab$coefficients[2]*x))) +
+  theme(legend.position = "none")
+
+dt[, prob_opt := exp(ab$coefficients[1] + 
+                       ab$coefficients[2]*hours)/(1+exp(ab$coefficients[1] +
+                       ab$coefficients[2]*hours))]
+
+dt[, ll_opt := passed*log(prob_opt) + (1 - passed)*log(1 - prob_opt)]
+
+log_likelihood_opt <- sum(dt$ll_opt)
+```
+
+
+
+
+
